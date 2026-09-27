@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { markOpeningSeen, openingCssVars } from "@/lib/opening";
+import { audio } from "@/lib/audio/audioManager";
 import CoverStage from "./CoverStage";
 import IntroStage from "./IntroStage";
 
@@ -57,6 +58,9 @@ export default function OpeningSequence({ ready, onDone }: OpeningSequenceProps)
       if (event.key !== "Enter" && event.key !== " ") return;
       if (event.repeat || event.defaultPrevented || event.target instanceof HTMLButtonElement) return;
       event.preventDefault(); // Space would scroll the page behind the cover
+      // Same rule as the tap handler in CoverStage: unlock directly inside this keydown handler, not
+      // through `start()`'s state update, so Enter/Space starting the game also unlocks mobile audio.
+      audio.unlockFromGesture();
       start();
     };
     window.addEventListener("keydown", onKeyDown);

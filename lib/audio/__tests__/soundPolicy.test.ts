@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_AUDIO_SETTINGS, type AudioSettings } from "../../audioSettingsStorage";
 import {
+  chooseVictorySound,
   decideVictory,
   isRetrigger,
   pickClearSounds,
@@ -132,6 +133,29 @@ describe("isRetrigger", () => {
     expect(isRetrigger(1000, 1100, 150)).toBe(true);
     expect(isRetrigger(1000, 1150, 150)).toBe(false);
     expect(isRetrigger(undefined, 1000, 150)).toBe(false);
+  });
+});
+
+describe("chooseVictorySound", () => {
+  it("picks by the rng's fraction of the list", () => {
+    expect(chooseVictorySound(["a", "b"], () => 0)).toBe("a");
+    expect(chooseVictorySound(["a", "b"], () => 0.49)).toBe("a");
+    expect(chooseVictorySound(["a", "b"], () => 0.5)).toBe("b");
+    expect(chooseVictorySound(["a", "b"], () => 0.999)).toBe("b");
+  });
+
+  it("never calls rng, and returns the only key, for a single-key list", () => {
+    let calls = 0;
+    expect(chooseVictorySound(["only"], () => (calls++, 0.9))).toBe("only");
+    expect(calls).toBe(0);
+  });
+
+  it("returns an empty string for an empty list instead of throwing", () => {
+    expect(chooseVictorySound([], () => 0)).toBe("");
+  });
+
+  it("clamps a boundary rng() of 1 to the last key, not past it", () => {
+    expect(chooseVictorySound(["a", "b", "c"], () => 1)).toBe("c");
   });
 });
 

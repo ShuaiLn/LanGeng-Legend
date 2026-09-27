@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { BRAND_ICON_URL, BRAND_LOGO_URL, getPreloadManifest, VICTORY_SOUND_URL } from "../assets";
+import { BRAND_ICON_URL, BRAND_LOGO_URL, getPreloadManifest, VICTORY2_SOUND_URL, VICTORY_SOUND_URL } from "../assets";
 import { assetUrl } from "../assetUrl";
 import { CHARACTER_LIBRARY } from "../characters";
 
@@ -16,9 +16,9 @@ function publicPathOf(url: string): string {
 const stemOf = (url: string) => path.parse(new URL(url, "http://localhost").pathname).name;
 
 describe("character assets", () => {
-  it("has 11 characters with unique ids", () => {
-    expect(CHARACTER_LIBRARY).toHaveLength(11);
-    expect(new Set(CHARACTER_LIBRARY.map((c) => c.id)).size).toBe(11);
+  it("has 15 characters with unique ids", () => {
+    expect(CHARACTER_LIBRARY).toHaveLength(15);
+    expect(new Set(CHARACTER_LIBRARY.map((c) => c.id)).size).toBe(15);
   });
 
   it("points every character at an art file and a sound that exist under public/", () => {
@@ -29,6 +29,7 @@ describe("character assets", () => {
       expect(existsSync(publicPathOf(character.assets.sound!)), `${character.id} sound file`).toBe(true);
     }
     expect(existsSync(publicPathOf(VICTORY_SOUND_URL))).toBe(true);
+    expect(existsSync(publicPathOf(VICTORY2_SOUND_URL))).toBe(true);
   });
 
   it("uses one file stem for a character's art and sound", () => {
@@ -42,7 +43,7 @@ describe("character assets", () => {
     expect(stems).toMatchObject({ kunkun: "kun", mj: "spider", sixseven: "67" });
   });
 
-  it("references every source PNG and MP3 in assets/ (only Victory is not a tile)", () => {
+  it("references every source PNG and MP3 in assets/ (only the victory jingles are not tiles)", () => {
     const referencedTiles = new Set(CHARACTER_LIBRARY.map((c) => stemOf(c.assets.normal!)));
     const referencedSounds = new Set(CHARACTER_LIBRARY.map((c) => stemOf(c.assets.sound!)));
 
@@ -53,10 +54,10 @@ describe("character assets", () => {
     const mp3s = readdirSync(path.join(root, "assets", "audio")).filter((n) => /\.mp3$/i.test(n));
     for (const mp3 of mp3s) {
       const stem = path.parse(mp3).name.toLowerCase();
-      if (stem === "victory") continue;
+      if (stem === "victory" || stem === "victory2") continue;
       expect(referencedSounds.has(stem), mp3).toBe(true);
     }
-    expect(mp3s).toHaveLength(referencedSounds.size + 1);
+    expect(mp3s).toHaveLength(referencedSounds.size + 2);
   });
 
   it("publishes every tile as a 512x512 transparent square (power of two, so WebGL1 can mipmap it)", async () => {
@@ -116,11 +117,12 @@ describe("brand assets", () => {
 });
 
 describe("getPreloadManifest", () => {
-  it("lists 11 tiles, 11 sounds and the victory jingle", () => {
+  it("lists 15 tiles, 15 sounds and both victory jingles", () => {
     const items = getPreloadManifest(null);
-    expect(items.filter((i) => i.kind === "image")).toHaveLength(11);
-    expect(items.filter((i) => i.kind === "audio")).toHaveLength(12);
+    expect(items.filter((i) => i.kind === "image")).toHaveLength(15);
+    expect(items.filter((i) => i.kind === "audio")).toHaveLength(17);
     expect(items.some((i) => i.key === "victory")).toBe(true);
+    expect(items.some((i) => i.key === "victory2")).toBe(true);
   });
 
   it("has no duplicate (kind, key) pairs and adds the custom image", () => {

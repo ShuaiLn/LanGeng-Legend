@@ -36,6 +36,9 @@ export default function GalleryGrid() {
   );
 
   const handlePlay = useCallback((id: string) => {
+    // Unlock synchronously inside this same tap/click handler before requesting playback: on
+    // mobile, a Gallery preview may be the very first sound the player ever triggers.
+    audio.unlockFromGesture();
     const decision = audio.playPreview(id);
     if (decision === "muted-master" || decision === "muted-tile") {
       setHintId(id);

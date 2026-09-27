@@ -38,7 +38,7 @@ The flow is **Home → Play → Mode picker → (Level Mode → Level grid → l
 | `/play?mode=endless`<br>`/play?mode=level&level=N&difficulty=D` | The game. No site header: on a wide screen one centred **strip** above the board (Pause, title, score / moves / combo, the goals or the Endless best), on a phone the same parts stacked around it. There is no Home button in gameplay. A level link without a valid level, or to a locked level, goes to `/levels`. |
 | `/settings` | Language, master sound switch, one switch per tile, and "Your Tile" (custom picture upload). |
 | `/how-to-play` | The rules, and the fan-work disclaimer. |
-| `/gallery` | All 11 characters; tap a tile to hear its sound. |
+| `/gallery` | All 15 characters; tap a tile to hear its sound. |
 
 ## Game systems
 
@@ -46,16 +46,21 @@ The flow is **Home → Play → Mode picker → (Level Mode → Level grid → l
 
 - **60-Second Endless.** Score as much as you can. When the clock hits zero, input locks at once but a cascade that is
   already animating plays out before the result screen. The best score is saved (only when a run *ends* and beats it)
-  and shown at the right end of the top bar, or as a chip in the strip above the board on wide screens.
+  and shown at the right end of the top bar, or as a chip in the strip above the board on wide screens. A small icon
+  next to the Endless card in the mode picker opens **Choose tiles** (`EndlessTilePicker`): a switch per library
+  character, at least `ENDLESS_MIN_TILES` (`game/config/gameConfig.ts`) always on. The choice is saved
+  (`meme-match:endless-tiles:v1`) and used the next time Endless starts; `getActivePool` draws only from that set
+  (`endlessCharacterPool` in `lib/endlessTilesStorage.ts`), falling back to the whole library if the save is corrupted
+  or every tile was switched off. Level Mode is unaffected: it always uses the whole library.
 - **Level Mode.** 20 levels in four chapters (warm-up, chains, precision, mastery). Each level has one to three goals
   and a move limit, and is cleared when **all** goals are met at the next settle. Goal kinds: reach a **score**,
   **collect** N tiles of a highlighted character (a different one every attempt, never the custom tile), **make** N
   special tiles, or reach a **chain** of ×N in one move. Clearing triggers the celebration: every leftover move becomes
   a striped/wrapped tile that auto-detonates for bonus score, then 1–3 stars are awarded against the _final_ score.
   Completing a level always says **`Clear！！`** (banner and result card, in both languages), then the result card
-  plays the victory jingle once.
+  plays one of two victory jingles once, chosen at random (`victory.mp3` / `victory2.mp3`, see "Art and audio").
 
-Every Endless game rolls 7 of the 11 library characters (`ACTIVE_POOL_SIZE` in `game/config/characters.ts`) on an 8x8
+Every Endless game rolls 7 of the 15 library characters (`ACTIVE_POOL_SIZE` in `game/config/characters.ts`) on an 8x8
 board. A level chooses both its **board size** (8x8 or 9x9, `gridSize`, capped by `MAX_GRID_SIZE`) and its **number of
 characters** (6, 7 or 8, `poolSize`); the two vary independently, neither climbs steadily, and neither is ever changed
 by the difficulty. A custom tile uploaded in Settings joins the board, takes one of those slots and always sits in the
@@ -163,8 +168,20 @@ Worth knowing before you change things. Tests enforce the ones marked (test).
   `useEffect` cleanup, scene shutdown), and events carry a `sessionId` so stale sessions are ignored.
 - **Audio lives outside Phaser.** `lib/audio/audioManager.ts` is a module singleton that survives route changes (Phaser
   is destroyed on every exit from `/play`). One clear event plays at most 3 sounds, one per character; at most 5 tile
-  voices overlap and the newest 5 win. The victory jingle is deduped per session. The Gallery uses the same manager and
-  policy. The knobs are `AUDIO` in `game/config/gameConfig.ts`.
+  voices overlap and the newest 5 win. The victory jingle is deduped per session, and each play is `victory.mp3` or
+  `victory2.mp3` chosen at random (`soundPolicy.chooseVictorySound`). The Gallery uses the same manager and policy. The
+  knobs are `AUDIO` in `game/config/gameConfig.ts`.
+- **Mobile audio unlock.** `audioManager.unlockFromGesture()` is the only sanctioned way to arm sound: it always starts a
+  real, silent `AudioBufferSourceNode` inside the current call, even if `ctx.state` already reads `"running"` — iOS
+  Safari / WeChat only count a source actually started synchronously inside a trusted gesture, and that report can be
+  stale. It is wired directly into the three real "first sound" gestures (the opening cover's tap/Enter/Space, the
+  board's `handlePointerDown`, a Gallery preview tap) — never through `useEffect`, `.then()`, `setTimeout` or a route
+  change, all of which run outside the gesture and silently fail to unlock iOS. `AssetGate`'s
+  `attachUnlockListeners()` (`pointerdown` / `touchstart` / `click` / `keydown`, not `touchend`) is a fallback for any
+  tap that misses those three, and stays attached for the app's lifetime: a context that later drops back to
+  `suspended`/`interrupted` (a phone call, Safari's power-saving) is re-primed by the next gesture, not just the first
+  one. `audio.debugAudioState()` (and `window.__memeMatchAudioDebug()`, deliberately available in production) reports
+  counts and flags only, for checking a real phone's unlock state without a dev build.
 - **Startup preload.** `AssetGate` (in the root layout) fetches every tile and sound once, behind a loading screen; a
   failure degrades to a text tile / silence with a notice instead of blocking. On a fresh load of `/` that cover is the
   opening (`components/opening/`): its timeline is CSS, with every delay and duration coming from `lib/opening.ts`, and
@@ -174,8 +191,11 @@ Worth knowing before you change things. Tests enforce the ones marked (test).
   tracked by `uid`, never by board coordinates.
 - **A tile is its art and nothing else.** No wells, no cell structure, no special-tile plate, no selection fill: the
   art sits straight on the white board card, a special tile adds sky-blue markers over it, and a selected tile gets an
-  outline ring only. (test: `assets.test.ts` checks every published tile has transparent corners and a transparent
-  share inside its bounding box; `shapes.test.ts` fails if any of those layers comes back.)
+  outline ring only. A special tile's art is drawn a little smaller (`ART_FILL_SPECIAL` in `BoardScene.ts`, vs. the
+  normal `ART_FILL`) so the markers have real clearance regardless of how close a character's own silhouette comes to
+  its canvas edge (a wide, full-bleed face like niulai's would otherwise have its horns cut by the bars). (test:
+  `assets.test.ts` checks every published tile has transparent corners and a transparent share inside its bounding
+  box; `shapes.test.ts` fails if any of those layers comes back.)
 - **Radius, size and shadow.** Six radii only (6 / 7 / 9 / 14 / 16 / 18px, `rounded-chip` … `rounded-board` in
   `globals.css`; buttons are the sharpest: 9px large, 7px compact). Pills are for progress bars, the Switch and the
   equalizer bars. Large buttons are 52px, compact 44px. (test: `radius.test.ts` fails on a stray `rounded-full` or an
@@ -196,8 +216,8 @@ Worth knowing before you change things. Tests enforce the ones marked (test).
   `registry.get("dpr")` converts the few CSS-pixel quantities (swipe distance, particle physics, callout positions).
 - **Menu background.** `FallingTiles` draws fourteen (nine on phones) 128px character images at 46–80px
   (`public/game/tiles-sm/`) falling behind the UI: transform-only, no filters, non-interactive, `aria-hidden`, hidden
-  under `prefers-reduced-motion`. With only 11 characters one can appear twice (React keys are `id-lane`). Positions
-  come from the seeded, pure `lib/menuFall.ts`, so server and client markup match.
+  under `prefers-reduced-motion`. If there are fewer characters than falling tiles, one can appear twice (React keys
+  are `id-lane`). Positions come from the seeded, pure `lib/menuFall.ts`, so server and client markup match.
 
 ## Art and audio
 
@@ -234,7 +254,7 @@ numbers and look at `public/game/brand/logo.webp` on both white and `#EAF4FF`.
    `lib/i18n/messages/en.ts` and `zh.ts`.
 3. `npm run assets:build`, then **bump `ASSET_VERSION`** in `game/config/assetUrl.ts`.
 4. `npm test`. `assets.test.ts` fails if a referenced file is missing or a source file is not referenced, and it pins
-   the library size (11), so update that number on purpose.
+   the library size (15), so update that number on purpose.
 
 ### Caching
 

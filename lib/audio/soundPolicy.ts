@@ -99,3 +99,13 @@ export function decideVictory(args: { lastSession: number | null; sessionId: num
 export function isRetrigger(lastStartedAt: number | undefined, now: number, minMs: number): boolean {
   return lastStartedAt !== undefined && now - lastStartedAt < minMs;
 }
+
+/**
+ * Which victory jingle to play: uniformly random among `keys` (`rng` is injected, like everywhere
+ * else here, so a seeded test can pin the pick). Falls back to the first key for degenerate input.
+ */
+export function chooseVictorySound(keys: readonly string[], rng: () => number): string {
+  if (keys.length <= 1) return keys[0] ?? "";
+  const index = Math.min(keys.length - 1, Math.floor(rng() * keys.length));
+  return keys[index];
+}

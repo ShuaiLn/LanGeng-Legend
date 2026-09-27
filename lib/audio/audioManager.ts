@@ -9,10 +9,11 @@
  * Browser-only at runtime; importing it on the server is harmless (every entry point no-ops
  * without an `AudioContext`).
  */
-import { soundUrlFor, VICTORY_SOUND_KEY, VICTORY_SOUND_URL } from "@/game/config/assets";
+import { soundUrlFor, victorySoundUrl, VICTORY_SOUND_KEYS } from "@/game/config/assets";
 import { AUDIO } from "@/game/config/gameConfig";
 import { getAudioSettings } from "../audioSettingsStorage";
 import {
+  chooseVictorySound,
   decideVictory,
   isRetrigger,
   planVoiceEviction,
@@ -35,7 +36,9 @@ interface Channel {
   gain: GainNode;
 }
 
-const UNLOCK_EVENTS = ["pointerdown", "touchend", "keydown"] as const;
+// touchend fires too late to count as the unlocking gesture on iOS; pointerdown/touchstart/click/keydown
+// all land at (or before) the moment the browser considers "trusted user activation" to start.
+const UNLOCK_EVENTS = ["pointerdown", "touchstart", "click", "keydown"] as const;
 
 class AudioManager {
   private ctx: AudioContext | null = null;
@@ -100,25 +103,32 @@ class AudioManager {
     return this.ctx;
   }
 
+  /**
+   * `running` is not a permanent fact on mobile: iOS Safari / WeChat can drop back to `suspended` or
+   * `interrupted` later (a phone call, the tab losing focus, Safari's own power-saving). This only
+   * decodes whatever bytes are waiting; it deliberately never detaches the gesture listeners, so a
+   * later interruption always has a live listener ready to re-prime and resume on the next tap.
+   */
   private handleStateChange = (): void => {
-    const state = this.ctx ? String(this.ctx.state) : "closed";
-    if (state === "running") {
-      this.detachUnlock();
-      void this.decodeRegistered();
-    } else {
-      // suspended / interrupted (iOS phone call, tab freeze): wait for the next gesture
-      this.attachUnlock();
-    }
+    if (this.ctx && String(this.ctx.state) === "running") void this.decodeRegistered();
   };
 
-  private handleGesture = (): void => {
+  /**
+   * Public, synchronous gesture entry point. Wire this directly into the real DOM event handler for
+   * every explicit "first sound" moment (the opening cover's tap, the board's first pointerdown, a
+   * Gallery preview tap) — never through a `useEffect`, a `.then()`, or a `setTimeout`, all of which
+   * run outside the browser's "user activation" window and silently fail to unlock iOS/WeChat audio.
+   *
+   * Safe to call repeatedly and from more than one handler for the same gesture: every call creates
+   * the context if needed and ALWAYS starts a real, silent `AudioBufferSourceNode` inside the current
+   * call stack (the actual iOS unlock signal), even if `ctx.state` already reads `"running"` — that
+   * report can be stale or won by a resume() that resolved outside a gesture, so it must never be
+   * trusted to skip priming.
+   */
+  unlockFromGesture = (): void => {
     const ctx = this.ensureContext();
     if (!ctx) return;
-    if (String(ctx.state) === "running") {
-      this.detachUnlock();
-      return;
-    }
-    // iOS only unlocks output after something is actually started inside the gesture.
+
     try {
       const silent = ctx.createBuffer(1, 1, 22050);
       const source = ctx.createBufferSource();
@@ -128,25 +138,30 @@ class AudioManager {
     } catch {
       // not fatal: resume() below is the standard path
     }
-    ctx.resume().catch(() => undefined);
+
+    const state = String(ctx.state);
+    if (state === "suspended" || state === "interrupted") ctx.resume().catch(() => undefined);
   };
 
   private attachUnlock(): void {
     if (this.unlockAttached || typeof window === "undefined") return;
     this.unlockAttached = true;
     for (const type of UNLOCK_EVENTS)
-      window.addEventListener(type, this.handleGesture, { capture: true, passive: true });
+      window.addEventListener(type, this.unlockFromGesture, { capture: true, passive: true });
   }
 
   private detachUnlock(): void {
     if (!this.unlockAttached || typeof window === "undefined") return;
     this.unlockAttached = false;
-    for (const type of UNLOCK_EVENTS) window.removeEventListener(type, this.handleGesture, { capture: true });
+    for (const type of UNLOCK_EVENTS) window.removeEventListener(type, this.unlockFromGesture, { capture: true });
   }
 
   /**
-   * Starts listening for the first user gesture (the standard, policy-compliant way to unlock
-   * audio). Returns a disposer. Safe to call repeatedly.
+   * Starts listening for the first user gesture, as a FALLBACK safety net for any tap that is not one
+   * of the explicit call sites above (e.g. a returning visitor who skips the opening cover entirely
+   * and lands straight on the menu). Kept attached for the whole app lifetime — never torn down just
+   * because the context once reported `running` (see `handleStateChange`). Returns a disposer for the
+   * component that armed it; safe to call repeatedly.
    */
   attachUnlockListeners(): () => void {
     this.attachUnlock();
@@ -188,7 +203,7 @@ class AudioManager {
   }
 
   private urlFor(key: string): string | null {
-    return key === VICTORY_SOUND_KEY ? VICTORY_SOUND_URL : soundUrlFor(key);
+    return victorySoundUrl(key) ?? soundUrlFor(key);
   }
 
   private async fetchBytes(key: string): Promise<ArrayBuffer | null> {
@@ -388,13 +403,15 @@ class AudioManager {
     const request = ++this.victoryRequest;
     const ctx = await this.runningContext();
     if (!ctx || request !== this.victoryRequest) return;
-    const buffer = await this.decode(VICTORY_SOUND_KEY);
+    // A different jingle each time keeps repeat Endless runs from sounding identical at the finish.
+    const key = chooseVictorySound(VICTORY_SOUND_KEYS, Math.random);
+    const buffer = await this.decode(key);
     if (!buffer || request !== this.victoryRequest) return;
 
     if (this.victory) this.fadeAndStop(this.victory.source, this.victory.gain, AUDIO.restartFadeMs);
     const nodes = this.spawn(buffer);
     if (!nodes) return;
-    const channel: Channel = { token: request, id: VICTORY_SOUND_KEY, ...nodes };
+    const channel: Channel = { token: request, id: key, ...nodes };
     this.victory = channel;
     nodes.source.onended = () => {
       this.releaseNodes(nodes.source, nodes.gain);
@@ -431,10 +448,39 @@ class AudioManager {
       pendingBytes: [...this.bytes.keys()],
     };
   }
+
+  /**
+   * Counts and flags only — no ids, no buffers, nothing personal. Meant to stay callable in
+   * production so a real phone's unlock state can be checked without a dev build.
+   */
+  debugAudioState(): {
+    contextExists: boolean;
+    state: string;
+    masterEnabled: boolean;
+    registeredBytes: number;
+    decodedBuffers: number;
+    activeVoices: number;
+  } {
+    return {
+      contextExists: this.ctx !== null,
+      state: this.ctx ? String(this.ctx.state) : "none",
+      masterEnabled: getAudioSettings().sfxEnabled,
+      registeredBytes: this.bytes.size,
+      decodedBuffers: this.buffers.size,
+      activeVoices: this.voices.size,
+    };
+  }
 }
 
 export const audio = new AudioManager();
 
 if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
   (window as unknown as Record<string, unknown>).__memeMatchAudio = audio;
+}
+
+// Deliberately available in production too (unlike the dev-only handle above): the only way to check
+// a real phone's unlock state is on a real deployed build. Exposes counts/flags only; temporary, for
+// verifying the mobile unlock path — safe to remove once that is confirmed stable in the field.
+if (typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__memeMatchAudioDebug = () => audio.debugAudioState();
 }

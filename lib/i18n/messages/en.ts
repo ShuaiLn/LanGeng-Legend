@@ -50,6 +50,10 @@ export const en = {
   "mode.endless.title": "{s}-Second Endless",
   "mode.endless.desc": "Score as much as you can before the clock runs out.",
   "mode.endless.best": "Best {n}",
+  "mode.endless.chooseTiles": "Choose tiles",
+  "mode.endless.tilesTitle": "Choose tiles",
+  "mode.endless.tilesDesc": "Endless only uses the characters you turn on here; keep at least {n}.",
+  "mode.endless.tileAria": "{name} in Endless",
   "mode.level.badge": "Star rating",
   "mode.level.title": "Level Mode",
   "mode.level.desc": "20 levels. Pick a difficulty and earn up to 3 stars on each.",
@@ -250,6 +254,10 @@ export const en = {
   "char.miaocui": "妙脆角小猫",
   "char.manbo": "曼波",
   "char.sixseven": "67",
+  "char.huanxiong": "浣熊",
+  "char.bird": "愤怒的小鸟",
+  "char.notch": "Notch",
+  "char.siu": "siu",
 } as const;
 
 export type MessageKey = keyof typeof en;

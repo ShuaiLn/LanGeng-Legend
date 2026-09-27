@@ -33,7 +33,7 @@ const libraryAssets = (stem: string): CharacterAssetSet => ({
   explode: null,
 });
 
-/** The 11 fixed characters. Never modified or trimmed; the gallery always shows all of them. */
+/** The 15 fixed characters. Never modified or trimmed; the gallery always shows all of them. */
 export const CHARACTER_LIBRARY: readonly CharacterConfig[] = [
   { id: "nailong", label: "奶龙", color: 0xf2b632, assets: libraryAssets("nailong") },
   { id: "kunkun", label: "蔡徐坤", color: 0x3f7fd6, assets: libraryAssets("kun") },
@@ -46,6 +46,10 @@ export const CHARACTER_LIBRARY: readonly CharacterConfig[] = [
   { id: "miaocui", label: "妙脆角小猫", color: 0xe0669a, assets: libraryAssets("miaocui") },
   { id: "manbo", label: "曼波", color: 0x2ab3c9, assets: libraryAssets("manbo") },
   { id: "sixseven", label: "67", color: 0x6f9a1c, assets: libraryAssets("67") },
+  { id: "huanxiong", label: "浣熊", color: 0x5c7c99, assets: libraryAssets("huanxiong") },
+  { id: "bird", label: "愤怒的小鸟", color: 0xe8432b, assets: libraryAssets("bird") },
+  { id: "notch", label: "Notch", color: 0x2c3e50, assets: libraryAssets("notch") },
+  { id: "siu", label: "siu", color: 0xe08a5c, assets: libraryAssets("siu") },
 ];
 
 /**
@@ -64,16 +68,18 @@ export function textureKeyFor(id: CharacterId): string {
 /**
  * The characters used for one session. A custom tile takes one of the `size` slots (so 5-7 library
  * characters + 1 custom), it does not add one, and it is always LAST: collect goals only ever
- * point at the first three slots, so the custom tile is never a collect target.
- * Call this exactly once per session and reuse the result for every refill/reshuffle.
+ * point at the first three slots, so the custom tile is never a collect target. `library` draws from
+ * a subset of `CHARACTER_LIBRARY` instead of the whole thing (Endless's player-chosen tile set); it
+ * is never modified. Call this exactly once per session and reuse the result for every refill/reshuffle.
  */
 export function getActivePool(
   customTile: CharacterConfig | null,
   rng: Rng,
-  size: number = ACTIVE_POOL_SIZE
+  size: number = ACTIVE_POOL_SIZE,
+  library: readonly CharacterConfig[] = CHARACTER_LIBRARY
 ): CharacterConfig[] {
   const slotsForLibrary = customTile ? size - 1 : size;
-  const chosen = shuffle(CHARACTER_LIBRARY, rng).slice(0, slotsForLibrary);
+  const chosen = shuffle(library, rng).slice(0, slotsForLibrary);
   return customTile ? [...chosen, customTile] : chosen;
 }
 

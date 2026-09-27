@@ -5,6 +5,8 @@ export const DEFAULT_GRID_SIZE = 8;
 export const MAX_GRID_SIZE = 9;
 
 export const ENDLESS_DURATION_SECONDS = 60;
+/** The player-chosen tile set for Endless can never drop below this many characters. */
+export const ENDLESS_MIN_TILES = 4;
 
 /** Drag distance (px) past which a pointer gesture counts as a swipe rather than a tap. */
 export const SWIPE_THRESHOLD_PX = 20;

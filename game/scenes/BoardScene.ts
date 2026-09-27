@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { audio } from "../../lib/audio/audioManager";
+import { endlessCharacterPool, getEndlessTileSettings } from "../../lib/endlessTilesStorage";
 import { getProgress, recordFor } from "../../lib/progressStorage";
 import { BOOM_CALLOUTS, memeCalloutFor, pickComboCallout } from "../config/callouts";
 import {
@@ -80,6 +81,14 @@ interface Gesture {
 const FONT_FAMILY = '"Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Hiragino Sans GB", sans-serif';
 /** Share of a cell that a sprite's longest side fills (about 5% padding per side). */
 const ART_FILL = 0.9;
+/**
+ * A special tile's art fills less of the cell than a plain tile's: the striped bars / ring markers
+ * are drawn OVER the art (see drawSpecial), and some characters' silhouettes reach close to their own
+ * canvas edge (e.g. niulai's horns) with no built-in padding to clear the marker. Shrinking the art a
+ * little whenever a tile carries a special guarantees that gap for every character, not just the ones
+ * whose art happens to have empty margin baked in.
+ */
+const ART_FILL_SPECIAL = 0.78;
 const DEPTH = { clearing: 5, selection: 10, particles: 15, fx: 20 } as const;
 /** A combo clear shares this many gold sparkles across all its tiles. */
 const COMBO_SPARKLE_BUDGET = 14;
@@ -168,8 +177,11 @@ export class BoardScene extends Phaser.Scene {
     const rng = Math.random;
 
     // The active pool is rolled exactly once per session and reused for every refill/reshuffle.
-    // Its size is the level's own (6, 7 or 8); Endless keeps the default.
-    const pool = getActivePool(customTile, rng, this.level?.poolSize);
+    // Its size is the level's own (6, 7 or 8); Endless keeps the default. Endless also draws only
+    // from the player's chosen tile set (the "choose tiles" picker); Level Mode always uses the
+    // whole library.
+    const library = this.mode === "endless" ? endlessCharacterPool(getEndlessTileSettings()) : undefined;
+    const pool = getActivePool(customTile, rng, this.level?.poolSize, library);
     const config: SessionConfig = this.level
       ? { mode: "level", level: this.level }
       : { mode: "endless", durationSeconds: ENDLESS_DURATION_SECONDS };
@@ -358,7 +370,7 @@ export class BoardScene extends Phaser.Scene {
 
     if (view.art instanceof Phaser.GameObjects.Image) {
       // Contain-fit inside the cell: aspect ratio always preserved, centred, never cropped.
-      const box = cell * ART_FILL;
+      const box = cell * (view.special ? ART_FILL_SPECIAL : ART_FILL);
       const fit = fitContain(view.art.width, view.art.height, box, box);
       view.art.setDisplaySize(fit.width, fit.height);
     } else {
@@ -574,6 +586,10 @@ export class BoardScene extends Phaser.Scene {
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
+    // Every physical touch on the board is another chance to unlock mobile audio: iOS/WeChat can
+    // drop the context back to suspended after the opening cover's tap, and this guarantees a source
+    // is started inside THIS gesture before any tile logic (and thus any playClear) can run.
+    audio.unlockFromGesture();
     if (this.inputLocked) return;
     const { x, y } = this.pointerToGame(pointer);
     const cell = this.pointToCell(x, y);

@@ -382,12 +382,23 @@ describe("getActivePool", () => {
     }
   });
 
-  it("never modifies or trims the fixed 11-character library", () => {
+  it("never modifies or trims the fixed 15-character library", () => {
     const before = CHARACTER_LIBRARY.map((c) => c.id);
     getActivePool(null, createRng(3));
     getActivePool({ id: CUSTOM_CHARACTER_ID, label: "x", color: 0, assets: { normal: null, sound: null, special: null, explode: null } }, createRng(4));
     expect(CHARACTER_LIBRARY.map((c) => c.id)).toEqual(before);
-    expect(CHARACTER_LIBRARY).toHaveLength(11);
+    expect(CHARACTER_LIBRARY).toHaveLength(15);
+  });
+
+  it("draws only from a given subset of the library when one is passed (Endless's chosen tile set)", () => {
+    const subset = CHARACTER_LIBRARY.slice(0, 5);
+    for (const seed of [1, 2, 3]) {
+      const active = getActivePool(null, createRng(seed), ACTIVE_POOL_SIZE, subset);
+      expect(active).toHaveLength(5); // the subset is smaller than ACTIVE_POOL_SIZE, so it is not padded
+      expect(active.every((c) => subset.includes(c))).toBe(true);
+    }
+    // the full library is untouched
+    expect(CHARACTER_LIBRARY).toHaveLength(15);
   });
 
   it("is reproducible for a fixed seed", () => {

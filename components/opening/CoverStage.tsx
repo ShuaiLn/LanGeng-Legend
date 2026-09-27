@@ -1,4 +1,5 @@
 import { BRAND_LOGO_URL } from "@/game/config/assets";
+import { audio } from "@/lib/audio/audioManager";
 import { useT } from "../hooks/useT";
 
 interface CoverStageProps {
@@ -22,7 +23,14 @@ export default function CoverStage({ active, ready, onStart }: CoverStageProps) 
       type="button"
       inert={!active}
       aria-disabled={!ready}
-      onClick={onStart}
+      onClick={() => {
+        // Directly inside the tap handler, before anything else: this is the one gesture every
+        // visitor is guaranteed to make, so it is the most reliable place to unlock mobile audio.
+        // Deferring this through state, a promise or a route change loses the browser's "user
+        // activation" window and leaves iOS Safari / WeChat permanently silent.
+        audio.unlockFromGesture();
+        onStart();
+      }}
       className="group absolute inset-0 flex w-full cursor-pointer flex-col items-center justify-center px-6 outline-none aria-disabled:cursor-default"
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- one static 40 KB image, needed at first paint; next/image adds nothing here */}

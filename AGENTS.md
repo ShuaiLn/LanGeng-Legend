@@ -52,7 +52,7 @@ on :3000 and serves the current code; `next build` is safe alongside it.
 - **Never edit `assets/` in place or hand-edit `public/game/`.** Regenerate with `npm run assets:build`. `assets/images/`
   holds tiles only. `public/game/` is committed on purpose, since `npm run build` does not run the script.
 - **Adding a character** is a multi-file change (art, sound, `CHARACTER_LIBRARY`, `char.<id>` keys, `ASSET_VERSION`, and
-  the pinned count of 11 in `assets.test.ts`): follow README, "Adding or replacing a character".
+  the pinned count of 15 in `assets.test.ts`): follow README, "Adding or replacing a character".
 
 ## Environment (Windows)
 
