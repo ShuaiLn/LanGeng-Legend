@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import Footer from "@/components/Footer";
-import Header from "@/components/Header";
+import AssetGate from "@/components/AssetGate";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -11,16 +10,17 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#120b24",
+  viewportFit: "cover",
+  themeColor: "#EAF4FF",
 };
 
+// No site-wide header or footer: the start screen has neither, gameplay has its own slim top bar,
+// and the other pages bring their own back-header and footer through PageShell / PageHeader.
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="h-full antialiased">
-      <body className="flex min-h-full flex-col">
-        <Header />
-        <main className="flex flex-1 flex-col">{children}</main>
-        <Footer />
+    <html lang="zh-CN" className="antialiased">
+      <body>
+        <AssetGate>{children}</AssetGate>
       </body>
     </html>
   );

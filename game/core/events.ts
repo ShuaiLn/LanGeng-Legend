@@ -1,3 +1,5 @@
+import type { Difficulty } from "../config/difficulty";
+import type { GoalView } from "./goals";
 import type { CellRef, SpecialType } from "./types";
 
 /**
@@ -26,6 +28,12 @@ export const GameEvents = {
   NEW_BEST: "new-best",
   RESTART_REQUESTED: "restart-requested",
   NEXT_LEVEL_REQUESTED: "next-level-requested",
+  GOAL_PROGRESS: "goal-progress",
+  /** React -> scene: freeze the game (the scene owns the actual pause and answers with PAUSE_CHANGED). */
+  PAUSE_REQUESTED: "pause-requested",
+  RESUME_REQUESTED: "resume-requested",
+  /** Scene -> React: the scene really is paused / running again. */
+  PAUSE_CHANGED: "pause-changed",
 } as const;
 
 export type GameEventName = (typeof GameEvents)[keyof typeof GameEvents];
@@ -35,18 +43,35 @@ export type PlayMode = "endless" | "level";
 export interface LevelResultPayload {
   sessionId: number;
   levelId: string;
-  levelName: string;
+  levelNumber: number;
+  difficulty: Difficulty;
+  /** Stars this run earned (the record keeps the best across runs). */
   stars: number;
   starThresholds: readonly number[];
   finalScore: number;
+  /** Best score for this level on this difficulty, after this run. */
   best: number;
   isNewBest: boolean;
   maxCombo: number;
+  moveLimit: number;
   bonusMoves: number;
   bonusScore: number;
+  /** There is a level after this one (false only for level 20). */
+  hasNext: boolean;
+  /** This clear raised the shared unlock line, so "next level unlocked" is news. */
+  unlockedNext: boolean;
+  /** Stars across all 20 levels of this difficulty, after this run. */
+  totalStars: number;
 }
 
 export type CalloutKind = "score" | "combo" | "meme" | "boom" | "system";
+
+/**
+ * Callouts that carry words of the interface (only the reshuffle notice now) ship a key next to their
+ * fallback text, and the React layer renders `key ? t(key, { n }) : text`. Verbatim content (scores,
+ * the meme phrases including the combo shout, BOOM!) has no key.
+ */
+export type CalloutKey = "system.reshuffle";
 
 export interface GameEventDetailMap {
   "session-started": {
@@ -54,9 +79,12 @@ export interface GameEventDetailMap {
     mode: PlayMode;
     timeRemaining: number | null;
     movesRemaining: number | null;
-    targetScore: number | null;
     levelId: string | null;
-    levelName: string | null;
+    levelNumber: number | null;
+    difficulty: Difficulty | null;
+    goals: GoalView[];
+    /** A one-line first-attempt hint for the level, when it has one and the player has not cleared it yet. */
+    hintKey: string | null;
   };
   "score-updated": { sessionId: number; score: number; delta: number };
   "combo-updated": { sessionId: number; combo: number };
@@ -69,9 +97,26 @@ export interface GameEventDetailMap {
     score: number;
     maxCombo: number;
     levelId: string | null;
-    levelName: string | null;
+    levelNumber: number | null;
+    difficulty: Difficulty | null;
+    /** How far each goal got (level mode); empty for Endless. */
+    goals: GoalView[];
+    /** Endless: the saved best after this run. Level: this difficulty's best for the level (0 if none). */
+    best: number;
+    /** Endless only: this run beat the saved best (and was saved). */
+    isNewBest: boolean;
   };
-  callout: { sessionId: number; kind: CalloutKind; text: string; x?: number; y?: number };
+  callout: {
+    sessionId: number;
+    kind: CalloutKind;
+    text: string;
+    /** Set when `text` is only a fallback for translated copy. */
+    key?: CalloutKey;
+    /** The chain length of a combo callout: it scales the pop, and is not part of the text. */
+    n?: number;
+    x?: number;
+    y?: number;
+  };
   "level-objective-met": { sessionId: number; levelId: string; score: number; movesRemaining: number };
   "celebration-lock-input": { sessionId: number };
   "celebration-level-clear": { sessionId: number };
@@ -83,6 +128,10 @@ export interface GameEventDetailMap {
   "new-best": { sessionId: number; levelId: string; score: number };
   "restart-requested": Record<string, never>;
   "next-level-requested": Record<string, never>;
+  "goal-progress": { sessionId: number; goals: GoalView[] };
+  "pause-requested": Record<string, never>;
+  "resume-requested": Record<string, never>;
+  "pause-changed": { sessionId: number; paused: boolean };
 }
 
 const listenerCounts = new Map<GameEventName, number>();

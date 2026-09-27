@@ -1,6 +1,17 @@
 import type { CharacterConfig } from "../config/characters";
 import type { LevelConfig } from "../config/levels";
+import { recordEndlessScore, type EndlessBestResult } from "../../lib/endlessBestStorage";
 import { emitGameEvent, GameEvents, setActiveSessionId, type PlayMode } from "./events";
+import {
+  applyClear,
+  applySpecialSpawn,
+  createGoals,
+  goalsMet,
+  goalViews,
+  type GoalState,
+  type GoalView,
+} from "./goals";
+import type { ResolutionStep } from "./resolver";
 import type { Rng } from "./types";
 
 export type SessionConfig =
@@ -11,6 +22,15 @@ export type SessionStatus = "playing" | "celebrating" | "ended";
 
 /** What `evaluateSettled` decided; anything but `continue` means input must stay locked. */
 export type SettleOutcome = "continue" | "objective-met" | "game-over" | "inactive";
+
+export interface SessionOptions {
+  /** Endless: called once, when the clock runs out, with the final score (saves it if it is a best). */
+  recordEndlessBest?: (score: number) => EndlessBestResult;
+  /** Level: this difficulty's stored best for the level, shown on the defeat card. */
+  levelBest?: (level: LevelConfig) => number;
+  /** Level: whether the player has already cleared this level (a first-attempt hint is only for a first attempt). */
+  levelCleared?: (level: LevelConfig) => boolean;
+}
 
 let sessionCounter = 0;
 
@@ -35,31 +55,54 @@ export class GameSession {
   objectiveScore: number | null = null;
   movesAtObjective: number | null = null;
 
+  private readonly goals: GoalState | null;
+  private readonly options: SessionOptions;
+
   constructor(
     readonly config: SessionConfig,
     /** Locked for the whole session: never re-rolled on refill or reshuffle. */
     readonly activePool: readonly CharacterConfig[],
-    readonly rng: Rng
+    readonly rng: Rng,
+    options: SessionOptions = {}
   ) {
     this.mode = config.mode;
+    this.options = options;
     this.timeRemaining = config.mode === "endless" ? config.durationSeconds : null;
     this.movesRemaining = config.mode === "level" ? config.level.moveLimit : null;
+    this.goals = config.mode === "level" ? createGoals(config.level.goals, activePool) : null;
   }
 
   get level(): LevelConfig | null {
     return this.config.mode === "level" ? this.config.level : null;
   }
 
+  /** Progress of every goal right now (empty in Endless). */
+  goalViews(): GoalView[] {
+    return this.goals ? goalViews(this.goals, { score: this.score, maxCombo: this.maxCombo }) : [];
+  }
+
+  private goalsAreMet(): boolean {
+    return this.goals !== null && goalsMet(this.goals, { score: this.score, maxCombo: this.maxCombo });
+  }
+
+  private emitGoalProgress(): void {
+    if (!this.goals) return;
+    emitGameEvent(GameEvents.GOAL_PROGRESS, { sessionId: this.sessionId, goals: this.goalViews() });
+  }
+
   start(): void {
     setActiveSessionId(this.sessionId);
+    const level = this.level;
     emitGameEvent(GameEvents.SESSION_STARTED, {
       sessionId: this.sessionId,
       mode: this.mode,
       timeRemaining: this.timeRemaining,
       movesRemaining: this.movesRemaining,
-      targetScore: this.level?.objective.targetScore ?? null,
-      levelId: this.level?.id ?? null,
-      levelName: this.level?.name ?? null,
+      levelId: level?.id ?? null,
+      levelNumber: level?.number ?? null,
+      difficulty: level?.difficulty ?? null,
+      goals: this.goalViews(),
+      hintKey: level?.hintKey && !this.options.levelCleared?.(level) ? level.hintKey : null,
     });
   }
 
@@ -80,6 +123,25 @@ export class GameSession {
     if (this.combo === 0) return;
     this.combo = 0;
     emitGameEvent(GameEvents.COMBO_UPDATED, { sessionId: this.sessionId, combo: 0 });
+  }
+
+  /**
+   * Applies one resolver step to the session as it is played: a clear scores, extends the chain and
+   * counts collected tiles; a special spawn counts toward "make specials". Goal progress is emitted
+   * once per step, never per tile. The scene calls this while animating (so the HUD ticks live) and
+   * a headless bot calls it the same way, so both walk exactly the same code.
+   */
+  applyStep(step: ResolutionStep): void {
+    if (step.type === "clear") {
+      this.addScore(step.scoreDelta);
+      this.registerCombo(step.comboIndex);
+      if (this.goals) {
+        applyClear(this.goals, step.cleared);
+        this.emitGoalProgress();
+      }
+    } else if (step.type === "spawnSpecial") {
+      if (this.goals && applySpecialSpawn(this.goals)) this.emitGoalProgress();
+    }
   }
 
   /** Called only for swaps that actually triggered a clear. */
@@ -110,6 +172,8 @@ export class GameSession {
     if (this.config.mode === "endless") {
       if ((this.timeRemaining ?? 1) > 0) return "continue";
       this.status = "ended";
+      // Saved only here, when the run really ends: leaving mid-run (Pause -> Home) is not a result.
+      const { best, isNewBest } = (this.options.recordEndlessBest ?? recordEndlessScore)(this.score);
       emitGameEvent(GameEvents.GAME_OVER, {
         sessionId: this.sessionId,
         mode: "endless",
@@ -117,13 +181,17 @@ export class GameSession {
         score: this.score,
         maxCombo: this.maxCombo,
         levelId: null,
-        levelName: null,
+        levelNumber: null,
+        difficulty: null,
+        goals: [],
+        best,
+        isNewBest,
       });
       return "game-over";
     }
 
     const { level } = this.config;
-    if (this.score >= level.objective.targetScore) {
+    if (this.goalsAreMet()) {
       // Not final: the celebration's bonus phase still adds score before stars are computed.
       this.status = "celebrating";
       this.objectiveScore = this.score;
@@ -146,7 +214,11 @@ export class GameSession {
         score: this.score,
         maxCombo: this.maxCombo,
         levelId: level.id,
-        levelName: level.name,
+        levelNumber: level.number,
+        difficulty: level.difficulty,
+        goals: this.goalViews(),
+        best: this.options.levelBest?.(level) ?? 0,
+        isNewBest: false,
       });
       return "game-over";
     }

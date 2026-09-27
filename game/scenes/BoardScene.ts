@@ -1,5 +1,7 @@
 import Phaser from "phaser";
-import { BOOM_CALLOUTS, comboCalloutText, memeCalloutFor } from "../config/callouts";
+import { audio } from "../../lib/audio/audioManager";
+import { getProgress, recordFor } from "../../lib/progressStorage";
+import { BOOM_CALLOUTS, memeCalloutFor, pickComboCallout } from "../config/callouts";
 import {
   findCharacter,
   getActivePool,
@@ -8,25 +10,29 @@ import {
 } from "../config/characters";
 import {
   ANIMATION,
-  BOARD_COLS,
-  BOARD_ROWS,
+  DEFAULT_GRID_SIZE,
   COMBO_CALLOUT_MIN,
   ENDLESS_DURATION_SECONDS,
   SWIPE_THRESHOLD_PX,
 } from "../config/gameConfig";
-import { DEMO_LEVEL } from "../config/levels";
-import { findValidMove, generateBoard } from "../core/board";
+import { DEFAULT_DIFFICULTY } from "../config/difficulty";
+import { resolveLevel, type LevelConfig } from "../config/levels";
+import { THEME, THEME_CSS } from "../config/theme";
+import { findValidMove, generateBoard, hasValidMove } from "../core/board";
 import { inBounds, isAdjacent } from "../core/cells";
 import { cancelAllCelebrations, startCelebrationListener, type CelebrationHost } from "../core/celebration";
 import {
   emitGameEvent,
   GameEvents,
   onGameEvent,
+  type CalloutKey,
   type CalloutKind,
   type GameEventDetailMap,
   type GameEventName,
   type PlayMode,
 } from "../core/events";
+import { pauseTransition, type PauseAction } from "../core/pause";
+import { ensurePlayable } from "../core/playable";
 import {
   attemptSwap,
   type ClearStep,
@@ -37,21 +43,25 @@ import {
   type SpawnSpecialStep,
 } from "../core/resolver";
 import { pickRandom } from "../core/rng";
-import { GameSession, type SessionConfig } from "../core/session";
+import { GameSession, type SessionConfig, type SessionOptions } from "../core/session";
 import type { Board, CellRef, CharacterId, SpecialType, Tile } from "../core/types";
-import { DOT_TEXTURE_KEY } from "./BootScene";
+import { DOT_TEXTURE_KEY, DOT_TEXTURE_SIZE } from "./BootScene";
+import { fitContain } from "./fit";
 import { computeLabelLayout } from "./labelFit";
+import { CORNER_RATIO } from "./shapes";
 
-type LockReason = "animating" | "timer" | "session" | "celebration";
+type LockReason = "animating" | "timer" | "session" | "celebration" | "paused";
 
 interface TileView {
   uid: number;
   characterId: CharacterId;
   special: SpecialType | null;
   container: Phaser.GameObjects.Container;
-  bg: Phaser.GameObjects.Graphics;
-  overlay: Phaser.GameObjects.Graphics;
   art: Phaser.GameObjects.Text | Phaser.GameObjects.Image;
+  /** Coloured card behind a text-placeholder tile. Image tiles have none: the art is the whole tile. */
+  bg: Phaser.GameObjects.Graphics | null;
+  /** Direction bars / ring / sparkle over the art of a special tile. Created lazily. */
+  marker: Phaser.GameObjects.Graphics | null;
 }
 
 interface Layout {
@@ -68,17 +78,23 @@ interface Gesture {
 }
 
 const FONT_FAMILY = '"Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Hiragino Sans GB", sans-serif';
-const IMAGE_TILE_COLOR = 0x1f2937;
-const DEPTH = { selection: 10, particles: 15, fx: 20 } as const;
+/** Share of a cell that a sprite's longest side fills (about 5% padding per side). */
+const ART_FILL = 0.9;
+const DEPTH = { clearing: 5, selection: 10, particles: 15, fx: 20 } as const;
+/** A combo clear shares this many gold sparkles across all its tiles. */
+const COMBO_SPARKLE_BUDGET = 14;
+const NORMAL_SPARKLES_PER_TILE = 2;
 
 export class BoardScene extends Phaser.Scene {
   private mode: PlayMode = "endless";
+  private level: LevelConfig | null = null;
+  /** Side of the square board: the level's own, or the default in Endless. */
+  private gridSize: number = DEFAULT_GRID_SIZE;
   private session!: GameSession;
   private board!: Board;
   private views = new Map<number, TileView>();
   private layout: Layout = { cell: 0, originX: 0, originY: 0 };
 
-  private backdrop!: Phaser.GameObjects.Graphics;
   private selection!: Phaser.GameObjects.Graphics;
   private selectedCell: CellRef | null = null;
   private gesture: Gesture | null = null;
@@ -92,6 +108,9 @@ export class BoardScene extends Phaser.Scene {
   private pendingRelayout = false;
   private restarting = false;
   private closed = false;
+  private paused = false;
+  /** The last combo phrase shown, so the next one differs; reset with every session. */
+  private lastComboCallout: string | null = null;
 
   constructor() {
     super("BoardScene");
@@ -101,9 +120,19 @@ export class BoardScene extends Phaser.Scene {
     return this.locks.size > 0;
   }
 
+  /**
+   * Device pixels per CSS pixel. The canvas backing store is device-resolution (see createGame), so
+   * game pixels are dpr x CSS pixels: anything defined in CSS pixels has to be scaled by this.
+   */
+  private get dpr(): number {
+    const value = this.registry.get("dpr");
+    return typeof value === "number" && value > 0 ? value : 1;
+  }
+
   private lock(reason: LockReason): void {
     this.locks.add(reason);
-    if (reason !== "animating") this.clearSelection();
+    // a running animation and a pause both keep the player's selection; everything else drops it
+    if (reason !== "animating" && reason !== "paused") this.clearSelection();
   }
 
   private unlock(reason: LockReason): void {
@@ -115,6 +144,9 @@ export class BoardScene extends Phaser.Scene {
   init(): void {
     // Scene instances survive `scene.restart()`, so every field must be reset here.
     this.mode = (this.registry.get("mode") as PlayMode | undefined) ?? "endless";
+    // Replay restarts this same scene, so the level (and its difficulty) simply stays in the registry.
+    this.level = this.mode === "level" ? ((this.registry.get("level") as LevelConfig | null | undefined) ?? resolveLevel(1, DEFAULT_DIFFICULTY)) : null;
+    this.gridSize = this.level?.gridSize ?? DEFAULT_GRID_SIZE;
     this.views = new Map();
     this.layout = { cell: 0, originX: 0, originY: 0 };
     this.selectedCell = null;
@@ -127,6 +159,8 @@ export class BoardScene extends Phaser.Scene {
     this.pendingRelayout = false;
     this.restarting = false;
     this.closed = false;
+    this.paused = false;
+    this.lastComboCallout = null;
   }
 
   create(): void {
@@ -134,18 +168,22 @@ export class BoardScene extends Phaser.Scene {
     const rng = Math.random;
 
     // The active pool is rolled exactly once per session and reused for every refill/reshuffle.
-    const pool = getActivePool(customTile, rng);
-    const config: SessionConfig =
-      this.mode === "level"
-        ? { mode: "level", level: DEMO_LEVEL }
-        : { mode: "endless", durationSeconds: ENDLESS_DURATION_SECONDS };
-    this.session = new GameSession(config, pool, rng);
-    this.board = generateBoard(BOARD_ROWS, BOARD_COLS, pool, rng);
+    // Its size is the level's own (6, 7 or 8); Endless keeps the default.
+    const pool = getActivePool(customTile, rng, this.level?.poolSize);
+    const config: SessionConfig = this.level
+      ? { mode: "level", level: this.level }
+      : { mode: "endless", durationSeconds: ENDLESS_DURATION_SECONDS };
+    const options: SessionOptions = {
+      levelBest: (level) => recordFor(getProgress(), level.difficulty, level.number)?.best ?? 0,
+      levelCleared: (level) => (recordFor(getProgress(), level.difficulty, level.number)?.stars ?? 0) >= 1,
+    };
+    this.session = new GameSession(config, pool, rng, options);
+    this.board = generateBoard(this.gridSize, this.gridSize, pool, rng);
 
-    this.backdrop = this.add.graphics();
+    // The board is the white CSS card (the canvas is transparent) with the tile art straight on it:
+    // no wells, no cell structure. The only thing drawn under the tiles is nothing.
     this.selection = this.add.graphics().setDepth(DEPTH.selection);
     this.computeLayout();
-    this.drawBackdrop();
 
     this.registerInput();
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
@@ -196,9 +234,13 @@ export class BoardScene extends Phaser.Scene {
   }
 
   private registerBusListeners(): void {
-    // Result-screen buttons only dispatch events; the scene owns the actual restart.
+    // Result-screen buttons only dispatch events; the scene owns the actual restart (Replay). "Next
+    // level" is a route change (a new URL, so a new game): React emits NEXT_LEVEL_REQUESTED only so the
+    // victory jingle can be cut off, and the scene deliberately does not listen to it.
     this.cleanups.push(onGameEvent(GameEvents.RESTART_REQUESTED, this.handleRestart));
-    this.cleanups.push(onGameEvent(GameEvents.NEXT_LEVEL_REQUESTED, this.handleRestart));
+    // Pause is for every mode, so these sit above the level-only listeners below.
+    this.cleanups.push(onGameEvent(GameEvents.PAUSE_REQUESTED, () => this.setPaused("pause")));
+    this.cleanups.push(onGameEvent(GameEvents.RESUME_REQUESTED, () => this.setPaused("resume")));
 
     if (this.mode !== "level") return;
 
@@ -226,41 +268,49 @@ export class BoardScene extends Phaser.Scene {
     this.scene.restart();
   };
 
+  /**
+   * Freezes or resumes the whole game. `scene.pause()` stops this scene's UPDATE, which is what
+   * drives tweens, the Endless clock and particles, so a resume continues the very same animation
+   * from the very same frame; nothing is reset (same session, board, score, moves, time, selection).
+   * The last frame stays on screen (paused scenes still render). The celebration sequencer runs on
+   * wall-clock timers this cannot stop, which is why React never offers Pause once a level is won.
+   */
+  private setPaused(action: PauseAction): void {
+    const { paused, changed } = pauseTransition(
+      { paused: this.paused, status: this.session.status, inert: this.closed || this.restarting },
+      action
+    );
+    if (!changed) return;
+    this.paused = paused;
+    if (paused) {
+      this.gesture = null; // a half-finished swipe must not complete after the resume
+      this.lock("paused");
+      this.scene.pause();
+    } else {
+      this.unlock("paused");
+      this.scene.resume();
+    }
+    emitGameEvent(GameEvents.PAUSE_CHANGED, { sessionId: this.session.sessionId, paused });
+  }
+
   // ---- layout & drawing ----------------------------------------------------
 
   private computeLayout(): void {
     const width = this.scale.width;
     const height = this.scale.height;
-    const padding = Math.max(6, Math.floor(Math.min(width, height) * 0.025));
-    const cell = Math.floor(Math.min((width - padding * 2) / BOARD_COLS, (height - padding * 2) / BOARD_ROWS));
+    // a slim margin: the tile art already leaves ~5% of its cell empty on every side
+    const padding = Math.max(4 * this.dpr, Math.floor(Math.min(width, height) * 0.015));
+    const cell = Math.floor(Math.min((width - padding * 2) / this.gridSize, (height - padding * 2) / this.gridSize));
     this.layout = {
       cell: Math.max(cell, 0),
-      originX: Math.floor((width - cell * BOARD_COLS) / 2),
-      originY: Math.floor((height - cell * BOARD_ROWS) / 2),
+      originX: Math.floor((width - cell * this.gridSize) / 2),
+      originY: Math.floor((height - cell * this.gridSize) / 2),
     };
   }
 
   private cellCenter(row: number, col: number): { x: number; y: number } {
     const { cell, originX, originY } = this.layout;
     return { x: originX + col * cell + cell / 2, y: originY + row * cell + cell / 2 };
-  }
-
-  private drawBackdrop(): void {
-    const { cell, originX, originY } = this.layout;
-    this.backdrop.clear();
-    if (cell < 4) return;
-    const pad = Math.max(4, cell * 0.08);
-    const boardW = cell * BOARD_COLS;
-    const boardH = cell * BOARD_ROWS;
-    this.backdrop.fillStyle(0x000000, 0.32);
-    this.backdrop.fillRoundedRect(originX - pad, originY - pad, boardW + pad * 2, boardH + pad * 2, pad * 2);
-    for (let row = 0; row < BOARD_ROWS; row++) {
-      for (let col = 0; col < BOARD_COLS; col++) {
-        if ((row + col) % 2 === 0) continue;
-        this.backdrop.fillStyle(0xffffff, 0.05);
-        this.backdrop.fillRect(originX + col * cell, originY + row * cell, cell, cell);
-      }
-    }
   }
 
   private characterFor(id: CharacterId): CharacterConfig | undefined {
@@ -272,29 +322,29 @@ export class BoardScene extends Phaser.Scene {
     const textureKey = textureKeyFor(tile.characterId);
     const useImage = Boolean(character?.assets.normal) && this.textures.exists(textureKey);
 
-    const bg = this.add.graphics();
-    const overlay = this.add.graphics();
     const art: TileView["art"] = useImage
       ? this.add.image(0, 0, textureKey)
       : this.add
           .text(0, 0, character?.label ?? tile.characterId, {
             fontFamily: FONT_FAMILY,
             fontStyle: "bold",
-            color: "#ffffff",
+            color: THEME_CSS.white,
             align: "center",
           })
           .setOrigin(0.5);
 
-    // overlay sits under the art so labels stay readable on top of special markings
-    const container = this.add.container(x, y, [bg, overlay, art]);
+    // An image tile is the art and nothing else: no card, no plate, no well. Only the text fallback
+    // (art missing) gets a coloured card.
+    const bg = useImage ? null : this.add.graphics();
+    const container = this.add.container(x, y, bg ? [bg, art] : [art]);
     const view: TileView = {
       uid: tile.uid,
       characterId: tile.characterId,
       special: tile.special,
       container,
-      bg,
-      overlay,
       art,
+      bg,
+      marker: null,
     };
     this.views.set(tile.uid, view);
     this.drawView(view);
@@ -304,75 +354,122 @@ export class BoardScene extends Phaser.Scene {
   private drawView(view: TileView): void {
     const { cell } = this.layout;
     if (cell < 4) return;
-    const character = this.characterFor(view.characterId);
     const size = cell * 0.92;
-    const half = size / 2;
-    const radius = size * 0.2;
-    const isImage = view.art instanceof Phaser.GameObjects.Image;
-    const color = isImage ? IMAGE_TILE_COLOR : (character?.color ?? 0x666666);
-
-    view.bg.clear();
-    view.bg.fillStyle(0x000000, 0.28);
-    view.bg.fillRoundedRect(-half + 1, -half + size * 0.05, size, size, radius);
-    view.bg.fillStyle(color, 1);
-    view.bg.fillRoundedRect(-half, -half, size, size, radius);
-    view.bg.fillStyle(0xffffff, 0.16);
-    view.bg.fillRoundedRect(-half, -half, size, size * 0.42, { tl: radius, tr: radius, bl: 0, br: 0 });
 
     if (view.art instanceof Phaser.GameObjects.Image) {
-      view.art.setDisplaySize(size * 0.86, size * 0.86);
+      // Contain-fit inside the cell: aspect ratio always preserved, centred, never cropped.
+      const box = cell * ART_FILL;
+      const fit = fitContain(view.art.width, view.art.height, box, box);
+      view.art.setDisplaySize(fit.width, fit.height);
     } else {
+      const character = this.characterFor(view.characterId);
+      this.drawTextCard(view, size);
       const layout = computeLabelLayout(character?.label ?? view.characterId, cell);
       view.art.setText(layout.text);
       view.art.setFontSize(layout.fontSize);
       view.art.setLineSpacing(Math.round(layout.fontSize * 0.05));
-      view.art.setStroke("#1a1030", Math.max(2, Math.round(layout.fontSize * 0.16)));
+      view.art.setStroke(THEME_CSS.text, Math.max(2, Math.round(layout.fontSize * 0.16)));
       view.art.setWordWrapWidth(size * 0.94);
     }
 
-    this.drawSpecialOverlay(view, size);
+    this.drawSpecial(view, size);
     view.container.setSize(size, size);
   }
 
-  private drawSpecialOverlay(view: TileView, size: number): void {
-    const g = view.overlay;
+  /** The coloured card behind a text-placeholder tile; `color` overrides it for the clear flash. */
+  private drawTextCard(view: TileView, size: number, color?: number): void {
+    const bg = view.bg;
+    if (!bg) return;
     const half = size / 2;
+    const radius = size * CORNER_RATIO;
+    bg.clear();
+    bg.fillStyle(THEME.text, 0.16);
+    bg.fillRoundedRect(-half + 1, -half + size * 0.05, size, size, radius);
+    bg.fillStyle(color ?? this.characterFor(view.characterId)?.color ?? 0x666666, 1);
+    bg.fillRoundedRect(-half, -half, size, size, radius);
+    bg.fillStyle(0xffffff, 0.16);
+    bg.fillRoundedRect(-half, -half, size, size * 0.42, { tl: radius, tr: radius, bl: 0, br: 0 });
+  }
+
+  /** Lazily creates the special-tile marker layer: plain tiles carry none, which keeps the board cheap. */
+  private specialLayer(view: TileView): Phaser.GameObjects.Graphics {
+    if (view.marker) return view.marker;
+    const graphics = this.add.graphics();
+    view.container.add(graphics); // over the art
+    view.marker = graphics;
+    return graphics;
+  }
+
+  /**
+   * Special tiles are the art plus markers over it: sky-blue bars / ring / sparkle with a white
+   * outline so they read on any sprite. Never a plate or background behind the art, and never gold:
+   * gold is reserved for combos.
+   */
+  private drawSpecial(view: TileView, size: number): void {
+    if (!view.special) return;
+    const half = size / 2;
+
+    const g = this.specialLayer(view);
     g.clear();
+    const t = Math.max(3, size * 0.085); // marker thickness
+    const edge = Math.max(3, size * 0.05); // inset from the tile edge
+    const outline = Math.max(1.5, size * 0.025);
+    const bar = (x: number, y: number, w: number, h: number) => {
+      g.fillStyle(0xffffff, 1);
+      g.fillRect(x - outline, y - outline, w + outline * 2, h + outline * 2);
+      g.fillStyle(THEME.primary, 1);
+      g.fillRect(x, y, w, h);
+    };
+    const dot = (cx: number, cy: number, r: number) => {
+      g.fillStyle(0xffffff, 1);
+      g.fillCircle(cx, cy, r + outline);
+      g.fillStyle(THEME.primary, 1);
+      g.fillCircle(cx, cy, r);
+    };
+
     switch (view.special) {
-      case "striped-row":
-        g.fillStyle(0xffffff, 0.55);
-        for (let i = -1; i <= 1; i++) g.fillRect(-half + 3, i * size * 0.26 - size * 0.06, size - 6, size * 0.12);
+      case "striped-row": {
+        const len = size * 0.74;
+        bar(-len / 2, -half + edge, len, t);
+        bar(-len / 2, half - edge - t, len, t);
         break;
-      case "striped-col":
-        g.fillStyle(0xffffff, 0.55);
-        for (let i = -1; i <= 1; i++) g.fillRect(i * size * 0.26 - size * 0.06, -half + 3, size * 0.12, size - 6);
+      }
+      case "striped-col": {
+        const len = size * 0.74;
+        bar(-half + edge, -len / 2, t, len);
+        bar(half - edge - t, -len / 2, t, len);
         break;
-      case "wrapped":
-        g.lineStyle(Math.max(3, size * 0.09), 0xffe066, 1);
-        g.strokeRoundedRect(-half + 2, -half + 2, size - 4, size - 4, size * 0.2);
-        g.fillStyle(0xffe066, 1);
-        for (const [cx, cy] of [
-          [-half + 3, -half + 3],
-          [half - 3, -half + 3],
-          [-half + 3, half - 3],
-          [half - 3, half - 3],
-        ]) {
-          g.fillCircle(cx, cy, size * 0.09);
-        }
+      }
+      case "wrapped": {
+        const inset = edge + t / 2;
+        g.lineStyle(t + outline * 2, 0xffffff, 1);
+        g.strokeRoundedRect(-half + inset, -half + inset, size - inset * 2, size - inset * 2, size * 0.16);
+        g.lineStyle(t, THEME.primary, 1);
+        g.strokeRoundedRect(-half + inset, -half + inset, size - inset * 2, size - inset * 2, size * 0.16);
+        for (const sx of [-1, 1]) for (const sy of [-1, 1]) dot(sx * (half - inset), sy * (half - inset), t * 0.75);
         break;
+      }
       case "super": {
-        const t = Math.max(3, size * 0.09);
-        const colors = [0xff5c5c, 0xffd23f, 0x4cd964, 0x4c9aff];
-        g.fillStyle(0xffffff, 0.22);
-        g.fillCircle(0, 0, size * 0.42);
-        g.fillStyle(colors[0], 1);
-        g.fillRect(-half, -half, size, t);
-        g.fillStyle(colors[1], 1);
-        g.fillRect(half - t, -half, t, size);
-        g.fillStyle(colors[2], 1);
-        g.fillRect(-half, half - t, size, t);
-        g.fillStyle(colors[3], 1);
-        g.fillRect(-half, -half, t, size);
+        const inset = edge + t / 2;
+        g.lineStyle(t * 1.3 + outline * 2, 0xffffff, 1);
+        g.strokeRoundedRect(-half + inset, -half + inset, size - inset * 2, size - inset * 2, size * 0.16);
+        g.lineStyle(t * 1.3, THEME.primary, 1);
+        g.strokeRoundedRect(-half + inset, -half + inset, size - inset * 2, size - inset * 2, size * 0.16);
+        // a four-point sparkle marks it as the super tile
+        const cx = half - size * 0.2;
+        const cy = -half + size * 0.2;
+        const outer = size * 0.19;
+        const inner = outer * 0.38;
+        const points: Phaser.Math.Vector2[] = [];
+        for (let i = 0; i < 8; i++) {
+          const r = i % 2 === 0 ? outer : inner;
+          const a = (Math.PI / 4) * i - Math.PI / 2;
+          points.push(new Phaser.Math.Vector2(cx + Math.cos(a) * r, cy + Math.sin(a) * r));
+        }
+        g.fillStyle(0xffffff, 1);
+        g.fillPoints(points, true);
+        g.lineStyle(outline * 1.4, THEME.primary, 1);
+        g.strokePoints(points, true);
         break;
       }
       default:
@@ -383,7 +480,6 @@ export class BoardScene extends Phaser.Scene {
   private relayout(): void {
     this.pendingRelayout = false;
     this.computeLayout();
-    this.drawBackdrop();
     for (let row = 0; row < this.board.length; row++) {
       for (let col = 0; col < this.board[row].length; col++) {
         const tile = this.board[row][col];
@@ -403,7 +499,6 @@ export class BoardScene extends Phaser.Scene {
     if (this.locks.has("animating")) {
       this.pendingRelayout = true;
       this.computeLayout();
-      this.drawBackdrop();
     } else {
       this.relayout();
     }
@@ -413,9 +508,12 @@ export class BoardScene extends Phaser.Scene {
     this.selection.clear();
     if (!this.selectedCell || this.layout.cell < 4) return;
     const { x, y } = this.cellCenter(this.selectedCell.row, this.selectedCell.col);
-    const size = this.layout.cell * 0.98;
-    this.selection.lineStyle(Math.max(3, this.layout.cell * 0.07), 0xffffff, 0.95);
-    this.selection.strokeRoundedRect(x - size / 2, y - size / 2, size, size, size * 0.2);
+    const size = this.layout.cell * 0.96;
+    const left = x - size / 2;
+    const top = y - size / 2;
+    // an outline ring only: a fill would read as a coloured square behind the tile
+    this.selection.lineStyle(Math.max(3, this.layout.cell * 0.06), THEME.primary, 1);
+    this.selection.strokeRoundedRect(left, top, size, size, size * CORNER_RATIO);
   }
 
   private select(cell: CellRef): void {
@@ -488,7 +586,7 @@ export class BoardScene extends Phaser.Scene {
     const here = this.pointerToGame(pointer);
     const dx = here.x - gesture.x;
     const dy = here.y - gesture.y;
-    if (Math.hypot(dx, dy) < SWIPE_THRESHOLD_PX) return;
+    if (Math.hypot(dx, dy) < SWIPE_THRESHOLD_PX * this.dpr) return;
 
     // Past the threshold it is a swipe: the dominant axis picks the direction.
     gesture.swiped = true;
@@ -549,26 +647,38 @@ export class BoardScene extends Phaser.Scene {
     } finally {
       if (!this.closed) {
         if (this.pendingRelayout) this.relayout();
-        this.settle();
-        this.unlock("animating");
+        await this.settle(); // still under the "animating" lock, so a safety-net reshuffle cannot be interrupted
+        if (!this.closed) this.unlock("animating");
       }
     }
   }
 
-  /** After a fully settled loop (or an idle timer expiry): decide whether the session goes on. */
-  private settle(): void {
-    if (this.session.evaluateSettled() !== "continue") this.lock("session");
+  /**
+   * After a fully settled loop (or an idle timer expiry): decide whether the session goes on, and if
+   * it does, make sure there is still a move to make. The resolver already repairs a dead board it
+   * creates; this second look is the safety net for anything it does not know about (a future
+   * mechanic, a bug), so no code path can leave the player on a board with no moves.
+   */
+  private async settle(): Promise<void> {
+    if (this.session.evaluateSettled() !== "continue") {
+      this.lock("session");
+      return;
+    }
+    if (this.closed || hasValidMove(this.board)) return;
+    const { method } = ensurePlayable(this.board, this.session.activePool, this.session.rng);
+    if (method === "none") return;
+    await this.playReshuffle({ type: "reshuffle", board: this.board.map((line) => line.map((tile) => (tile ? { ...tile } : null))), method });
   }
 
   private handleTimerTick(): void {
-    if (this.closed) return;
+    if (this.closed || this.paused) return;
     if (this.session.tickSecond() > 0) return;
 
     // Time is up: refuse new swaps immediately, but let any in-flight cascade finish first.
     this.timerEvent?.remove();
     this.timerEvent = null;
     this.lock("timer");
-    if (!this.locks.has("animating")) this.settle();
+    if (!this.locks.has("animating")) void this.settle();
     // otherwise trySwap's `finally` calls settle() once playback has completed
   }
 
@@ -658,11 +768,20 @@ export class BoardScene extends Phaser.Scene {
   }
 
   private async playClear(step: ClearStep): Promise<void> {
-    this.session.addScore(step.scoreDelta);
-    this.session.registerCombo(step.comboIndex);
+    // scores, extends the chain and counts collected tiles: one call, one goal-progress event
+    this.session.applyStep(step);
+
+    // The pass a swap triggers is a normal clear (red); every chained pass is a combo (gold).
+    // Bonus detonations at level clear follow the same rule.
+    const isCombo = step.comboIndex >= 1;
+
+    // One call per elimination event: the audio layer picks at most 3 characters, never one per tile.
+    audio.playClear(step.cleared);
 
     let sumX = 0;
     let sumY = 0;
+    let sparkleBudget = COMBO_SPARKLE_BUDGET;
+    const sparklesPerTile = Math.max(1, Math.floor(COMBO_SPARKLE_BUDGET / Math.max(step.cleared.length, 1)));
     const tweens: Promise<void>[] = [];
     for (const cleared of step.cleared) {
       const view = this.views.get(cleared.uid);
@@ -671,17 +790,15 @@ export class BoardScene extends Phaser.Scene {
       sumY += y;
       if (!view) continue;
       this.views.delete(cleared.uid);
-      this.burst(x, y, this.characterFor(cleared.characterId)?.color ?? 0xffffff, 5);
-      tweens.push(
-        this.tween({
-          targets: view.container,
-          scale: 0.15,
-          alpha: 0,
-          angle: Phaser.Math.Between(-40, 40),
-          duration: ANIMATION.clear,
-          ease: "Quad.easeIn",
-        }).then(() => view.container.destroy())
-      );
+
+      if (isCombo) {
+        const count = Math.min(sparklesPerTile, sparkleBudget);
+        if (count > 0) this.burst(x, y, THEME.gold, count);
+        sparkleBudget -= count;
+      } else {
+        this.burst(x, y, THEME.redSoft, NORMAL_SPARKLES_PER_TILE);
+      }
+      tweens.push(this.playTileClear(view, isCombo));
     }
 
     for (const special of step.activated) this.playSpecialEffect(special.special, special.cell);
@@ -698,35 +815,95 @@ export class BoardScene extends Phaser.Scene {
     const meme = kind ? memeCalloutFor(kind, this.session.rng) : null;
     if (meme) this.emitCallout("meme", meme);
     if (step.comboIndex + 1 >= COMBO_CALLOUT_MIN) {
-      this.emitCallout("combo", comboCalloutText(this.session.rng));
+      // a meme phrase, not a count (the HUD's Combo box has the count); `n` only scales the pop
+      this.lastComboCallout = pickComboCallout(this.session.rng, this.lastComboCallout);
+      this.emitCallout("combo", this.lastComboCallout, undefined, undefined, { n: step.comboIndex + 1 });
     }
 
     await Promise.all(tweens);
   }
 
+  /**
+   * One tile's elimination: a flat-colour silhouette flash (red, or gold for a combo) that follows
+   * the sprite's own transparency, a quick pop, then the shrink-away. The texture itself is never
+   * modified, and a combo adds a gold silhouette "glow" behind the art (no filters or shaders).
+   */
+  private playTileClear(view: TileView, isCombo: boolean): Promise<void> {
+    const color = isCombo ? THEME.gold : THEME.red;
+    const total = isCombo ? ANIMATION.clearCombo : ANIMATION.clearNormal;
+    const flashMs = ANIMATION.clearFlash;
+    const peak = isCombo ? 1.22 : 1.14;
+    const container = view.container;
+    container.setDepth(DEPTH.clearing); // pop above the neighbours
+
+    if (view.art instanceof Phaser.GameObjects.Image) {
+      const key = view.art.texture.key;
+      const { displayWidth, displayHeight } = view.art;
+
+      const flash = this.add
+        .image(0, 0, key)
+        .setDisplaySize(displayWidth, displayHeight)
+        .setTint(color)
+        .setTintMode(Phaser.TintModes.FILL)
+        .setAlpha(0);
+      container.add(flash);
+      // leaves ~15% of the art visible underneath so its detail is not lost
+      void this.tween({ targets: flash, alpha: 0.85, duration: flashMs, ease: "Quad.easeOut" });
+
+      if (isCombo) {
+        const glow = this.add
+          .image(0, 0, key)
+          .setDisplaySize(displayWidth * 1.15, displayHeight * 1.15)
+          .setTint(THEME.gold)
+          .setTintMode(Phaser.TintModes.FILL)
+          .setAlpha(0.5);
+        container.addAt(glow, 0);
+      }
+    } else {
+      // text-placeholder fallback: recolour the card for the flash
+      this.drawTextCard(view, this.layout.cell * 0.92, color);
+    }
+
+    return this.tween({ targets: container, scale: peak, duration: flashMs, ease: "Quad.easeOut" })
+      .then(() =>
+        this.tween({
+          targets: container,
+          scale: 0.1,
+          alpha: 0,
+          angle: Phaser.Math.Between(-40, 40),
+          duration: Math.max(total - flashMs, 60),
+          ease: "Quad.easeIn",
+        })
+      )
+      .then(() => {
+        if (!this.closed) container.destroy();
+      });
+  }
+
   private playSpecialEffect(special: SpecialType, cell: CellRef): void {
     const { cell: size, originX, originY } = this.layout;
     const { x, y } = this.cellCenter(cell.row, cell.col);
-    const boardW = size * BOARD_COLS;
-    const boardH = size * BOARD_ROWS;
+    const boardW = size * this.gridSize;
+    const boardH = boardW;
     let shape: Phaser.GameObjects.Shape;
     let props: Phaser.Types.Tweens.TweenBuilderConfig;
 
+    // Sky blue, not white or gold: white vanishes on the light board and gold is for combos.
     switch (special) {
       case "striped-row":
-        shape = this.add.rectangle(originX + boardW / 2, y, boardW, size * 0.9, 0xffffff, 0.8);
+        shape = this.add.rectangle(originX + boardW / 2, y, boardW, size * 0.9, THEME.primary, 0.5);
         props = { targets: shape, alpha: 0, scaleY: 0.15, duration: 320, ease: "Quad.easeOut" };
         break;
       case "striped-col":
-        shape = this.add.rectangle(x, originY + boardH / 2, size * 0.9, boardH, 0xffffff, 0.8);
+        shape = this.add.rectangle(x, originY + boardH / 2, size * 0.9, boardH, THEME.primary, 0.5);
         props = { targets: shape, alpha: 0, scaleX: 0.15, duration: 320, ease: "Quad.easeOut" };
         break;
       case "wrapped":
-        shape = this.add.circle(x, y, size * 0.7, 0xffe066, 0.75);
+        shape = this.add.circle(x, y, size * 0.7, THEME.primary, 0.5);
         props = { targets: shape, alpha: 0, scale: 3, duration: 340, ease: "Quad.easeOut" };
         break;
       default:
-        shape = this.add.rectangle(originX + boardW / 2, originY + boardH / 2, boardW, boardH, 0xffffff, 0.7);
+        shape = this.add.rectangle(originX + boardW / 2, originY + boardH / 2, boardW, boardH, THEME.skySoft, 0.7);
         props = { targets: shape, alpha: 0, duration: 420, ease: "Quad.easeOut" };
         break;
     }
@@ -734,7 +911,9 @@ export class BoardScene extends Phaser.Scene {
     void this.tween(props).then(() => shape.destroy());
   }
 
+
   private async playSpawnSpecial(step: SpawnSpecialStep): Promise<void> {
+    this.session.applyStep(step); // counts toward "make specials" goals
     const view = this.views.get(step.uid);
     if (!view) return;
     view.special = step.special;
@@ -782,8 +961,9 @@ export class BoardScene extends Phaser.Scene {
   }
 
   private async playReshuffle(step: ReshuffleStep): Promise<void> {
-    const { x, y } = this.cellCenter(BOARD_ROWS / 2 - 0.5, BOARD_COLS / 2 - 0.5);
-    this.emitCallout("system", "No moves left — reshuffling!", x, y);
+    const { x, y } = this.cellCenter(this.gridSize / 2 - 0.5, this.gridSize / 2 - 0.5);
+    // English is only the fallback text: the React layer renders the translated `system.reshuffle`
+    this.emitCallout("system", "No moves left — reshuffling!", x, y, { key: "system.reshuffle" });
 
     await Promise.all(
       [...this.views.values()].map((view) =>
@@ -819,9 +999,9 @@ export class BoardScene extends Phaser.Scene {
 
   private starBurst(): void {
     const { cell, originX, originY } = this.layout;
-    const x = originX + (cell * BOARD_COLS) / 2;
-    const y = originY + (cell * BOARD_ROWS) / 2;
-    this.burst(x, y, 0xffe066, 26);
+    const x = originX + (cell * this.gridSize) / 2;
+    const y = originY + (cell * this.gridSize) / 2;
+    this.burst(x, y, THEME.gold, 26);
     this.cameras.main.shake(110, 0.003);
   }
 
@@ -829,12 +1009,13 @@ export class BoardScene extends Phaser.Scene {
   private burst(x: number, y: number, color: number, count: number): void {
     let emitter = this.burstEmitters.get(color);
     if (!emitter) {
+      const dpr = this.dpr; // speeds and sizes are authored in CSS pixels
       emitter = this.add.particles(0, 0, DOT_TEXTURE_KEY, {
-        speed: { min: 70, max: 240 },
+        speed: { min: 70 * dpr, max: 240 * dpr },
         lifespan: { min: 260, max: 560 },
-        scale: { start: 0.9, end: 0 },
+        scale: { start: (0.9 * dpr * 8) / DOT_TEXTURE_SIZE, end: 0 }, // 0.9 x an 8px dot, in CSS pixels
         alpha: { start: 1, end: 0 },
-        gravityY: 320,
+        gravityY: 320 * dpr,
         tint: color,
         emitting: false,
       });
@@ -844,8 +1025,23 @@ export class BoardScene extends Phaser.Scene {
     emitter.explode(count, x, y);
   }
 
-  private emitCallout(kind: CalloutKind, text: string, x?: number, y?: number): void {
-    emitGameEvent(GameEvents.CALLOUT, { sessionId: this.session.sessionId, kind, text, x, y });
+  /** `x`/`y` are game pixels; the React callout layer positions in CSS pixels, hence the division. */
+  private emitCallout(
+    kind: CalloutKind,
+    text: string,
+    x?: number,
+    y?: number,
+    extra?: { key?: CalloutKey; n?: number }
+  ): void {
+    const dpr = this.dpr;
+    emitGameEvent(GameEvents.CALLOUT, {
+      sessionId: this.session.sessionId,
+      kind,
+      text,
+      ...extra,
+      x: x === undefined ? undefined : x / dpr,
+      y: y === undefined ? undefined : y / dpr,
+    });
   }
 
   // ---- dev / e2e helpers -------------------------------------------------------------
@@ -857,6 +1053,9 @@ export class BoardScene extends Phaser.Scene {
       sessionId: this.session.sessionId,
       score: this.session.score,
       status: this.session.status,
+      paused: this.paused,
+      level: this.level?.id ?? null,
+      goals: this.session.goalViews(),
       timeRemaining: this.session.timeRemaining,
       movesRemaining: this.session.movesRemaining,
       poolIds: this.session.activePool.map((c) => c.id),

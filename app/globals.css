@@ -1,45 +1,185 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens: one source of truth. Light, minimal, white + sky blue.
+ * `game/config/theme.ts` mirrors the few values the Phaser canvas needs (keep the two in sync).
+ * Colour roles: red = a normal elimination, gold = a combo elimination and nothing else,
+ * sky blue = everything interactive. No black, no purple, no neon, no glass blur.
+ */
 :root {
-  color-scheme: dark;
-  --background: #120b24;
-  --foreground: #f4efff;
-  --surface: #1e1340;
-  --surface-2: #2b1b57;
-  --border: #3d2a78;
-  --accent: #ffd23f;
-  --accent-2: #ff5c8a;
-  --muted: #a99bd0;
+  color-scheme: light;
+
+  /* surfaces */
+  --bg-page-top: #ffffff;
+  --bg-page-bottom: #e8f3ff;
+  --bg-panel: #ffffff;
+  --bg-well: #eef5fe;
+  --gray-100: #f3f5f8;
+  --bg-game: #f7fafe;
+
+  /* brand */
+  --primary: #2e8fea;
+  --primary-hover: #1f7fdb;
+  --primary-press: #1a6fc2;
+  /* blue for small text on white / sky-soft / well (4.8:1 or better); --primary itself is for fills */
+  --primary-ink: #1765b3;
+  --on-primary: #ffffff;
+  --sky-soft: #d6eaff;
+  --sky-soft-hover: #c4e1ff;
+
+  /* text: deep blue-navy, never black */
+  --text: #1f3a5f;
+  /* 4.6:1 or better on every surface it sits on, including the lower end of the page gradient */
+  --text-2: #4c688c;
+
+  /* lines */
+  --border: #d6e6f7;
+
+  /* feedback */
+  --elim-red: #ff4d4f;
+  --danger: var(--elim-red);
+  --danger-ink: #c4302b;
+  --combo-gold: #ffc933;
+  --combo-gold-ink: #7a4b00;
+
+  /* motion */
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 360ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-surface: var(--surface);
-  --color-surface-2: var(--surface-2);
-  --color-border: var(--border);
-  --color-accent: var(--accent);
-  --color-accent-2: var(--accent-2);
-  --color-muted: var(--muted);
-  --font-sans: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Hiragino Sans GB", system-ui, -apple-system,
-    "Segoe UI", sans-serif;
+  --color-page: var(--bg-page-top);
+  --color-panel: var(--bg-panel);
+  --color-well: var(--bg-well);
+  --color-soft: var(--gray-100);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-press: var(--primary-press);
+  --color-primary-ink: var(--primary-ink);
+  --color-on-primary: var(--on-primary);
+  --color-sky-soft: var(--sky-soft);
+  --color-sky-soft-hover: var(--sky-soft-hover);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-line: var(--border);
+  --color-elim: var(--elim-red);
+  --color-danger: var(--danger);
+  --color-danger-ink: var(--danger-ink);
+  --color-gold: var(--combo-gold);
+  --color-gold-ink: var(--combo-gold-ink);
+
+  /* Rectangular and restrained: 6-18px, no candy shapes; buttons are the sharpest (7 and 9px). Only progress bars, the Switch and the
+     equalizer bars are pills (lib/__tests__/radius.test.ts guards this). */
+  --radius-chip: 6px; /* badges, the speaker chip */
+  --radius-btn-sm: 7px; /* compact buttons, back links, dismiss, close, image wells */
+  --radius-btn: 9px; /* large buttons, callout bubbles */
+  --radius-item: 14px; /* mode cards, stat cards, tile cards, list rows, toasts */
+  --radius-card: 16px; /* panels, dialogs, the result overlay, the level-clear banner */
+  --radius-board: 18px; /* the board frame */
+
+  /* nothing heavier than these: a hairline and a faint neutral lift */
+  --shadow-sm: 0 1px 2px rgb(31 58 95 / 0.06);
+  --shadow-md: 0 2px 10px rgb(31 58 95 / 0.07);
+
+  --font-sans:
+    "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Hiragino Sans GB", system-ui, -apple-system, "Segoe UI",
+    sans-serif;
 }
 
+/* The two compositions of the play screen, and the short-screen tweaks. A wide viewport (5:4 or
+   wider: desktop, landscape phone) puts one centred strip above the board; anything else stacks.
+   `tight` is a wide viewport that is also very short (a phone on its side): the title makes way. */
+@custom-variant wide (@media (min-aspect-ratio: 5/4));
+@custom-variant short (@media (max-aspect-ratio: 5/4) and (max-height: 620px));
+@custom-variant tight (@media (min-aspect-ratio: 5/4) and (max-height: 520px));
+
+/* No background on <html>: body's gradient then propagates to the canvas, which keeps the fixed
+   `-z-10` decor layers (menu bubbles, game dot grid) painting above it instead of beneath it. */
 body {
-  background:
-    radial-gradient(1100px 600px at 15% -10%, rgba(255, 92, 138, 0.18), transparent 60%),
-    radial-gradient(900px 600px at 95% 0%, rgba(255, 210, 63, 0.12), transparent 55%), var(--background);
+  min-height: 100dvh;
+  background: linear-gradient(180deg, var(--bg-page-top) 0%, var(--bg-page-bottom) 100%);
   background-attachment: fixed;
-  color: var(--foreground);
+  color: var(--text);
   font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* taps are taps: no double-tap zoom, no 300ms delay on interactive elements */
+a,
+button,
+summary,
+label,
+[role="switch"] {
+  touch-action: manipulation;
 }
 
 :focus-visible {
-  outline: 3px solid var(--accent);
+  outline: 3px solid var(--primary);
   outline-offset: 2px;
 }
 
-/* ---- in-game overlay animations (all driven by CSS so React stays cheap) ---- */
+::selection {
+  background: var(--sky-soft);
+}
+
+/* ---- backgrounds -------------------------------------------------------------------------- */
+
+/* Start screen: soft CSS bubbles, with the falling character tiles (.fall-tile) on top of them. */
+.bg-menu {
+  background: linear-gradient(180deg, #ffffff 0%, #eef6ff 55%, #dceeff 100%);
+}
+
+.bg-bubble {
+  position: absolute;
+  border-radius: 9999px;
+  /* radial falloff instead of filter: blur, so there is no GPU blur cost */
+  background: radial-gradient(circle at 50% 50%, rgb(214 234 255 / 0.55) 0%, rgb(214 234 255 / 0) 70%);
+  animation: bubble-float ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+/* Menu: real character art falling behind the UI. Transform only, constant opacity, no filters, no JS;
+   position, size, speed and delay come from lib/menuFall.ts as custom properties. */
+.fall-tile {
+  position: absolute;
+  top: -120px; /* clears the tallest tile (80px) so none pops in at the top edge */
+  left: var(--x);
+  width: var(--s);
+  height: auto;
+  opacity: 0.28;
+  user-select: none;
+  animation: tile-fall var(--d) linear var(--delay) infinite;
+  will-change: transform;
+}
+
+/* In-game: a faint static dot grid, nothing detailed behind the tiles. */
+.bg-game {
+  background-color: var(--bg-game);
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1.5px);
+  background-size: 24px 24px;
+}
+
+/* ---- keyframes -------------------------------------------------------------------------------- */
+
+@keyframes bubble-float {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(2.5%, -6%, 0) scale(1.08);
+  }
+}
+
+@keyframes tile-fall {
+  from {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  to {
+    transform: translate3d(0, calc(100dvh + 120px), 0) rotate(var(--r));
+  }
+}
 
 @keyframes callout-rise {
   0% {
@@ -48,7 +188,7 @@ body {
   }
   15% {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1.15);
+    transform: translate(-50%, -50%) scale(1.1);
   }
   100% {
     opacity: 0;
@@ -59,27 +199,55 @@ body {
 @keyframes callout-pop {
   0% {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.3) rotate(-8deg);
+    transform: translate(-50%, -50%) scale(0.4);
   }
   18% {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1.25) rotate(-4deg);
+    transform: translate(-50%, -50%) scale(1.15);
   }
-  35% {
-    transform: translate(-50%, -50%) scale(1) rotate(-4deg);
+  32% {
+    transform: translate(-50%, -50%) scale(1);
   }
   80% {
     opacity: 1;
   }
   100% {
     opacity: 0;
-    transform: translate(-50%, -80%) scale(1) rotate(-4deg);
+    transform: translate(-50%, -80%) scale(1);
+  }
+}
+
+/* A brief scale pulse for big combos (x4, x6): no extra particles. */
+@keyframes combo-pulse {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.4);
+  }
+  16% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.3);
+  }
+  30% {
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  44% {
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+  58% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -80%) scale(1);
   }
 }
 
 @keyframes screen-flash {
   0% {
-    opacity: 0.9;
+    opacity: 0.45;
   }
   100% {
     opacity: 0;
@@ -89,22 +257,22 @@ body {
 @keyframes banner-pop {
   0% {
     opacity: 0;
-    transform: scale(0.2) rotate(-10deg);
+    transform: scale(0.6);
   }
-  35% {
+  22% {
     opacity: 1;
-    transform: scale(1.18) rotate(2deg);
+    transform: scale(1.06);
   }
-  50% {
-    transform: scale(1) rotate(0deg);
+  34% {
+    transform: scale(1);
   }
   85% {
     opacity: 1;
-    transform: scale(1.03);
+    transform: scale(1);
   }
   100% {
     opacity: 0;
-    transform: scale(1.4);
+    transform: scale(1.08);
   }
 }
 
@@ -115,7 +283,7 @@ body {
   }
   60% {
     opacity: 1;
-    transform: scale(1.4) rotate(8deg);
+    transform: scale(1.35) rotate(8deg);
   }
   100% {
     opacity: 1;
@@ -123,24 +291,141 @@ body {
   }
 }
 
-@keyframes badge-wiggle {
-  0%,
-  100% {
-    transform: rotate(-4deg) scale(1);
+@keyframes badge-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
   }
-  50% {
-    transform: rotate(4deg) scale(1.08);
+  60% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 
 @keyframes panel-in {
   0% {
     opacity: 0;
-    transform: translateY(14px) scale(0.96);
+    transform: translateY(14px) scale(0.97);
   }
   100% {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes sheet-up {
+  0% {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes rise-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes confetti-fall {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, -10%, 0) rotate(0deg);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--confetti-x, 0px), 105%, 0) rotate(var(--confetti-r, 360deg));
+  }
+}
+
+@keyframes star-shimmer {
+  0% {
+    opacity: 0;
+    transform: translateX(-120%) skewX(-18deg);
+  }
+  40% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(220%) skewX(-18deg);
+  }
+}
+
+@keyframes callout-hold {
+  0%,
+  75% {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%);
+  }
+}
+
+@keyframes banner-hold {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes equalizer {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes gallery-pop {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1.04);
+  }
+}
+
+@keyframes progress-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
   }
 }
 
@@ -150,30 +435,310 @@ body {
 .anim-callout-pop {
   animation: callout-pop 1300ms ease-out forwards;
 }
+.anim-combo-pulse {
+  animation: combo-pulse 1300ms ease-out forwards;
+}
 .anim-screen-flash {
   animation: screen-flash 650ms ease-out forwards;
 }
 .anim-banner-pop {
-  animation: banner-pop 1700ms cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+  animation: banner-pop 1700ms var(--ease) forwards;
 }
 .anim-star-pop {
-  animation: star-pop 420ms cubic-bezier(0.2, 1.4, 0.4, 1) forwards;
+  /* `both`: hidden during its stagger delay, then pops in */
+  animation: star-pop 420ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
 }
-.anim-badge-wiggle {
-  animation: badge-wiggle 700ms ease-in-out infinite;
+.anim-badge-pop {
+  animation: badge-pop 420ms var(--ease) both;
 }
 .anim-panel-in {
-  animation: panel-in 320ms ease-out both;
+  animation: panel-in 320ms var(--ease) both;
+}
+.anim-sheet-up {
+  animation: sheet-up 280ms var(--ease) both;
+}
+.anim-fade-in {
+  animation: fade-in var(--dur) ease-out both;
+}
+.anim-rise-in {
+  animation: rise-in 300ms var(--ease) both;
+}
+.anim-confetti {
+  animation: confetti-fall 1200ms ease-in forwards;
+}
+.anim-star-shimmer {
+  animation: star-shimmer 900ms ease-out 600ms both;
+}
+.anim-gallery-pop {
+  animation: gallery-pop var(--dur) var(--ease) forwards;
+}
+.eq-bar {
+  transform-origin: bottom;
+  animation: equalizer 700ms ease-in-out infinite;
 }
 
+/* Outlined text for callouts floating over the board: white halo + soft blue shadow (no dark shadows). */
+.callout-text {
+  text-shadow:
+    -1.5px -1.5px 0 #fff,
+    1.5px -1.5px 0 #fff,
+    -1.5px 1.5px 0 #fff,
+    1.5px 1.5px 0 #fff,
+    0 0 3px #fff,
+    0 3px 10px rgb(46 143 234 / 0.35);
+}
+
+/* native <dialog> (mode picker): style the scrim, keep the browser's focus trap and Esc handling */
+dialog.sheet::backdrop {
+  background: rgb(31 58 95 / 0.14);
+  animation: fade-in var(--dur) ease-out both;
+}
+dialog.sheet[open] {
+  animation: panel-in 260ms var(--ease) both;
+}
+@media (max-width: 639px) {
+  dialog.sheet[open] {
+    animation: sheet-up 280ms var(--ease) both;
+  }
+}
+
+/* The Pause menu: always centred (never a bottom sheet), same scrim as the other dialogs */
+dialog.pause::backdrop {
+  background: rgb(31 58 95 / 0.14);
+  animation: fade-in var(--dur) ease-out both;
+}
+dialog.pause[open] {
+  animation: panel-in 260ms var(--ease) both;
+}
+
+/* ---- play screen ------------------------------------------------------------------------------
+   One component tree, two compositions, chosen by CSS alone (no JS measuring).
+   Portrait: top bar / stats / board (takes the rest of the height) / goals, all inside 100dvh, so the
+   page never scrolls. The board is a square, min(width, height) of its slot, centred in it.
+   Wide (5:4 or wider): one centred strip (Pause, title, stats, goals or the Endless best) above the
+   board, and the pair is centred in the viewport. The board is whatever square is left under the
+   strip, at most 700px, so it shrinks by the strip's height on its own. */
+.play-root {
+  --pad-t: max(8px, env(safe-area-inset-top));
+  --pad-r: max(8px, env(safe-area-inset-right));
+  --pad-b: max(8px, env(safe-area-inset-bottom));
+  --pad-l: max(8px, env(safe-area-inset-left));
+  display: grid;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "top" "hud" "board" "goals";
+  gap: 8px;
+  padding: var(--pad-t) var(--pad-r) var(--pad-b) var(--pad-l);
+  overflow-x: hidden;
+  /* only a very short screen ever scrolls; the board slot keeps a minimum so nothing is unreachable */
+  overflow-y: auto;
+}
+.play-root[data-goals="0"] {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas: "top" "hud" "board";
+}
+/* Portrait: the strip is not a box, so its three parts are grid items of .play-root (areas below). */
+.play-strip {
+  display: contents;
+}
+.play-top {
+  grid-area: top;
+  min-width: 0;
+}
+.play-hud {
+  grid-area: hud;
+  min-width: 0;
+}
+.play-goals {
+  grid-area: goals;
+  min-width: 0;
+}
+.play-board-slot {
+  grid-area: board;
+  container-type: size;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 220px;
+}
+.play-board {
+  width: min(100cqw, 100cqh);
+  aspect-ratio: 1 / 1;
+}
+
+@media (min-aspect-ratio: 5/4) {
+  .play-root,
+  .play-root[data-goals="0"] {
+    grid-template-columns: minmax(0, 1fr);
+    /* the board's row grows to what is left, up to 700px; the pair is then centred as a group
+       (`safe`, so a viewport too short for it scrolls from the top instead of clipping it) */
+    grid-template-rows: auto minmax(220px, 700px);
+    grid-template-areas:
+      "strip"
+      "board";
+    align-content: center;
+    align-content: safe center;
+  }
+  .play-strip {
+    grid-area: strip;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 8px 12px;
+    width: fit-content;
+    max-width: 100%;
+    justify-self: center;
+  }
+  .play-board {
+    width: min(100cqw, 100cqh, 700px);
+  }
+}
+
+/* a phone on its side: a tighter strip, so it stays on one row even with three goals */
+@media (min-aspect-ratio: 5/4) and (max-height: 520px) {
+  .play-strip {
+    column-gap: 6px;
+  }
+}
+
+/* ---- opening + cover ------------------------------------------------------------------------
+   Every delay and duration comes from lib/opening.ts, set inline on .op-root as --op-* (full) and
+   --opr-* (reduced). .op-root maps one set onto --t-*, so the reduced-motion block below swaps a
+   single mapping and the rules here never repeat a number. */
+.op-root {
+  --t-in-at: var(--op-in-at);
+  --t-in-ms: var(--op-in-ms);
+  --t-out-at: var(--op-out-at);
+  --t-out-ms: var(--op-out-ms);
+  --t-content-out-ms: var(--op-content-out-ms);
+  --t-logo-at: var(--op-logo-at);
+  --t-logo-ms: var(--op-logo-ms);
+  --t-hint-at: var(--op-hint-at);
+  --t-hint-ms: var(--op-hint-ms);
+  --t-exit-ms: var(--op-exit-ms);
+}
+
+/* the intro credit and mark: fade in with an 8px rise, no bounce */
+.op-in {
+  animation: op-rise var(--t-in-ms) cubic-bezier(0.22, 1, 0.36, 1) var(--t-in-at) both;
+}
+/* the intro layer (the white) fades away over the cover that already sits underneath it, and its
+   content clears quicker than the white so the mark never overlaps the logo */
+.op-intro-layer {
+  animation: op-leave var(--t-out-ms) linear var(--t-out-at) forwards;
+}
+.op-intro-content {
+  animation: op-leave var(--t-content-out-ms) ease-out var(--t-out-at) forwards;
+}
+/* the only motion on the cover: the logo eases in from 0.96 */
+.op-logo {
+  animation: op-settle var(--t-logo-ms) cubic-bezier(0.22, 1, 0.36, 1) var(--t-logo-at) both;
+}
+.op-hint {
+  animation: fade-in var(--t-hint-ms) ease-out var(--t-hint-at) both;
+}
+/* after a tap: the whole cover fades out over the menu */
+.op-exit {
+  animation: op-leave var(--t-exit-ms) ease-out forwards;
+}
+
+@keyframes op-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes op-settle {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes op-leave {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* ---- reduced motion: every decorative animation off, state changes stay instant ---- */
 @media (prefers-reduced-motion: reduce) {
-  .anim-badge-wiggle {
+  .bg-bubble,
+  .fall-tile,
+  .eq-bar,
+  .anim-confetti,
+  .anim-star-shimmer {
     animation: none;
   }
-  .anim-banner-pop,
+  .fall-tile,
+  .anim-confetti,
+  .anim-star-shimmer {
+    display: none;
+  }
+  /* readable but still: hold in place, then fade (a 1ms animation would end invisible) */
+  .anim-callout-rise,
   .anim-callout-pop,
-  .anim-callout-rise {
+  .anim-combo-pulse {
+    animation: callout-hold 1100ms linear forwards;
+  }
+  .anim-banner-pop {
+    animation: banner-hold 1700ms linear forwards;
+  }
+  .anim-screen-flash {
+    animation: none;
+    opacity: 0;
+  }
+  .anim-star-pop,
+  .anim-badge-pop,
+  .anim-panel-in,
+  .anim-sheet-up,
+  .anim-fade-in,
+  .anim-rise-in,
+  .anim-gallery-pop {
     animation-duration: 1ms;
     animation-delay: 0ms;
+  }
+  dialog.sheet::backdrop,
+  dialog.sheet[open],
+  dialog.pause::backdrop,
+  dialog.pause[open] {
+    animation: none;
+  }
+  /* the opening keeps its order of events but is shorter and opacity-only: no rise, no scale */
+  .op-root {
+    --t-in-at: var(--opr-in-at);
+    --t-in-ms: var(--opr-in-ms);
+    --t-out-at: var(--opr-out-at);
+    --t-out-ms: var(--opr-out-ms);
+    --t-content-out-ms: var(--opr-content-out-ms);
+    --t-logo-at: var(--opr-logo-at);
+    --t-logo-ms: var(--opr-logo-ms);
+    --t-hint-at: var(--opr-hint-at);
+    --t-hint-ms: var(--opr-hint-ms);
+    --t-exit-ms: var(--opr-exit-ms);
+  }
+  .op-in,
+  .op-logo {
+    animation-name: fade-in;
+  }
+  * {
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
   }
 }

@@ -70,7 +70,12 @@ export function hasValidMove(board: Board): boolean {
 }
 
 /** Fill a rows x cols grid with characterIds such that no 3-run exists anywhere. */
-function fillWithoutRuns(rows: number, cols: number, ids: readonly CharacterId[], rng: Rng): CharacterId[][] {
+export function fillWithoutRuns(
+  rows: number,
+  cols: number,
+  ids: readonly CharacterId[],
+  rng: Rng
+): CharacterId[][] {
   const grid: CharacterId[][] = Array.from({ length: rows }, () => Array<CharacterId>(cols));
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
@@ -101,40 +106,51 @@ export function generateBoard(rows: number, cols: number, pool: CharacterPool, r
   throw new Error("generateBoard could not find a playable layout");
 }
 
-const MAX_RESHUFFLE_ATTEMPTS = 300;
+export const MAX_RESHUFFLE_ATTEMPTS = 300;
 
 /**
- * Rearranges the tiles already on the board (specials travel with their tile) until there is
- * no immediate 3-run and at least one valid move. Mutates `board`; returns false only in the
- * degenerate case where no arrangement of the current tiles can work and re-rolling failed too.
+ * Tier one of the repair ladder: permutes the tiles already on the board (uids and specials travel
+ * with their tile) until there is no immediate 3-run and at least one valid move. Mutates `board`;
+ * false when no permutation of these tiles works. A failed attempt leaves the last permutation in
+ * place, so a caller must go on to rebuild the board rather than trust it.
  */
-export function reshuffleBoard(board: Board, rng: Rng): boolean {
-  const rows = boardRows(board);
+export function permuteBoard(board: Board, rng: Rng): boolean {
   const cols = boardCols(board);
   const tiles = board.flat().filter((tile): tile is Tile => tile !== null);
 
-  const place = (arrangement: Tile[]) => {
-    arrangement.forEach((tile, index) => {
+  for (let attempt = 0; attempt < MAX_RESHUFFLE_ATTEMPTS; attempt++) {
+    shuffle(tiles, rng).forEach((tile, index) => {
       board[Math.floor(index / cols)][index % cols] = tile;
     });
-  };
-
-  for (let attempt = 0; attempt < MAX_RESHUFFLE_ATTEMPTS; attempt++) {
-    place(shuffle(tiles, rng));
     if (!hasMatch(board) && hasValidMove(board)) return true;
   }
+  return false;
+}
 
+/**
+ * Rearranges the tiles already on the board until there is no immediate 3-run and at least one
+ * valid move. Mutates `board`; returns false only in the degenerate case where no arrangement of
+ * the current tiles can work and re-rolling the characters present failed too. The game itself
+ * uses `ensurePlayable` (playable.ts), which re-rolls from the whole pool and never gives up.
+ */
+export function reshuffleBoard(board: Board, rng: Rng): boolean {
+  if (permuteBoard(board, rng)) return true;
+
+  const rows = boardRows(board);
+  const cols = boardCols(board);
+  const tiles = board.flat().filter((tile): tile is Tile => tile !== null);
   // Pathological multiset (e.g. too few of every character): re-roll characterIds among the
   // ones present, keeping each tile's uid and special.
   const ids = [...new Set(tiles.map((t) => t.characterId))];
   if (ids.length < 3) return false;
   for (let attempt = 0; attempt < MAX_RESHUFFLE_ATTEMPTS; attempt++) {
     const grid = fillWithoutRuns(rows, cols, ids, rng);
-    const rerolled = tiles.map((tile, index) => ({
-      ...tile,
-      characterId: grid[Math.floor(index / cols)][index % cols],
-    }));
-    place(rerolled);
+    tiles.forEach((tile, index) => {
+      board[Math.floor(index / cols)][index % cols] = {
+        ...tile,
+        characterId: grid[Math.floor(index / cols)][index % cols],
+      };
+    });
     if (hasValidMove(board)) return true;
   }
   return false;

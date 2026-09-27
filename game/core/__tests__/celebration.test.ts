@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ACTIVE_POOL_SIZE, getActivePool } from "../../config/characters";
 import type { CelebrationTimings } from "../../config/gameConfig";
-import { computeStars, DEMO_LEVEL, type LevelConfig } from "../../config/levels";
+import { computeStars, resolveLevel, scoreGoalTarget, type LevelConfig } from "../../config/levels";
+import type { VictoryOutcome } from "../../../lib/progressStorage";
 import { findTileCellByUid, generateBoard } from "../board";
 import {
   activeCelebrationCount,
@@ -60,7 +61,8 @@ function record(names: GameEventName[] = CELEBRATION_EVENTS) {
   return seen;
 }
 
-const TARGET = DEMO_LEVEL.objective.targetScore;
+const LEVEL = resolveLevel(1, "normal");
+const TARGET = scoreGoalTarget(LEVEL)!;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function waitForResult(sessionId: number, timeoutMs = 3000): Promise<GameEventDetailMap["celebration-result"]> {
@@ -76,7 +78,7 @@ function waitForResult(sessionId: number, timeoutMs = 3000): Promise<GameEventDe
 }
 
 function makeHost(opts: { seed: number; level?: LevelConfig; movesUsed?: number }) {
-  const level = opts.level ?? DEMO_LEVEL;
+  const level = opts.level ?? LEVEL;
   const rng = createRng(opts.seed);
   const pool = getActivePool(null, rng);
   const session = new GameSession({ mode: "level", level }, pool, rng);
@@ -89,28 +91,38 @@ function makeHost(opts: { seed: number; level?: LevelConfig; movesUsed?: number 
     getBoard: () => board,
     // mimic BoardScene: scores apply as each clear step "plays"
     playSteps: async (steps) => {
-      for (const step of steps) {
-        if (step.type !== "clear") continue;
-        session.addScore(step.scoreDelta);
-        session.registerCombo(step.comboIndex);
-      }
+      for (const step of steps) session.applyStep(step);
     },
   };
   return { host, session, board, pool };
 }
 
 function reachObjective(session: GameSession) {
-  session.addScore(session.level!.objective.targetScore);
+  session.addScore(scoreGoalTarget(session.level!)!);
   return session.evaluateSettled();
 }
 
-const stubStorage = (best = 0) => {
+/** A stand-in for the progress store: reports the outcome a store holding `best` would, and logs what it is asked to record. */
+const stubStorage = (best = 0, overrides: Partial<VictoryOutcome> = {}) => {
   const writes: number[] = [];
+  const records: { level: LevelConfig; score: number; stars: number }[] = [];
   return {
     writes,
+    records,
     storage: {
-      getBest: () => best,
-      setBest: (_id: string, score: number) => void writes.push(score),
+      record: (level: LevelConfig, score: number, stars: number): VictoryOutcome => {
+        writes.push(score);
+        records.push({ level, score, stars });
+        return {
+          isNewBest: score > best,
+          best: Math.max(best, score),
+          stars,
+          unlockedNext: true,
+          totalStars: stars,
+          hasNext: level.number < 20,
+          ...overrides,
+        };
+      },
     },
   };
 };
@@ -163,9 +175,9 @@ describe("celebration sequence", () => {
     expect(types.filter((t) => t === GameEvents.CELEBRATION_FINAL_SCORE)).toHaveLength(1);
     expect(types.filter((t) => t === GameEvents.CELEBRATION_RESULT)).toHaveLength(1);
 
-    // 12 of 20 moves used -> 8 leftover moves, each converted to a striped/wrapped tile (never super)
+    // 12 of 24 moves used -> 12 leftover moves, each converted to a striped/wrapped tile (never super)
     const converts = seen.filter((e) => e.type === GameEvents.CELEBRATION_CONVERT);
-    expect(converts).toHaveLength(8);
+    expect(converts).toHaveLength(LEVEL.moveLimit - 12);
     expect(converts.every((e) => (BONUS_SPECIAL_TYPES as readonly string[]).includes(e.detail.special as string))).toBe(true);
     expect(session.movesRemaining).toBe(0);
     // (a `super` may still appear later, but only by a genuine 5-match in a bonus cascade)
@@ -175,8 +187,8 @@ describe("celebration sequence", () => {
     // scoring: final == live score; bonus is what was added after the objective was hit
     expect(result.finalScore).toBe(session.score);
     expect(result.bonusScore).toBe(session.score - TARGET);
-    expect(result.bonusMoves).toBe(8);
-    expect(result.stars).toBe(computeStars(session.score, DEMO_LEVEL.starThresholds));
+    expect(result.bonusMoves).toBe(LEVEL.moveLimit - 12);
+    expect(result.stars).toBe(computeStars(session.score, LEVEL.starThresholds));
     expect(seen.filter((e) => e.type === GameEvents.CELEBRATION_STAR)).toHaveLength(result.stars);
     expect(seen.find((e) => e.type === GameEvents.CELEBRATION_FINAL_SCORE)!.detail.score).toBe(session.score);
     expect(result.maxCombo).toBeGreaterThanOrEqual(1);
@@ -200,8 +212,89 @@ describe("celebration sequence", () => {
     const result = await done;
     expect(result.isNewBest).toBe(false);
     expect(result.best).toBe(999_999);
-    expect(writes).toEqual([]);
+    expect(writes).toEqual([session.score]); // still recorded: the stars and the unlock count even without a new best
     expect(seen.some((e) => e.type === GameEvents.NEW_BEST)).toBe(false);
+  });
+
+  it("records the clear once, before the star beats, against the level and difficulty it was played on", async () => {
+    const seen = record();
+    const level = resolveLevel(9, "hard");
+    const { host, session } = makeHost({ seed: 26, level, movesUsed: level.moveLimit - 2 });
+    const { storage, records } = stubStorage(0);
+    let recordedBeforeFirstStar = false;
+    disposers.push(
+      onGameEvent(GameEvents.CELEBRATION_STAR, () => {
+        recordedBeforeFirstStar ||= records.length === 1;
+      })
+    );
+    disposers.push(startCelebrationListener(() => host, { timings: ZERO, storage }));
+    const done = waitForResult(session.sessionId);
+    session.addScore(level.starThresholds[0] + 10);
+    // level 9 wants two collect goals: satisfy them through the session so the objective is really met
+    for (const goal of level.goals) {
+      if (goal.type !== "collect") continue;
+      const id = session.activePool[goal.slot].id;
+      session.applyStep({ type: "clear", cleared: Array.from({ length: goal.count }, (_, i) => ({ uid: 900 + i, cell: { row: 0, col: 0 }, characterId: id, special: null })), activated: [], kinds: ["line3"], comboIndex: 0, scoreDelta: 0 });
+    }
+    expect(session.evaluateSettled()).toBe("objective-met");
+    const result = await done;
+
+    expect(records).toHaveLength(1);
+    expect(records[0].level.id).toBe("hard-09");
+    expect(records[0].score).toBe(session.score);
+    expect(records[0].stars).toBe(result.stars);
+    expect(recordedBeforeFirstStar || result.stars === 0).toBe(true);
+    expect(seen.filter((e) => e.type === GameEvents.CELEBRATION_RESULT)).toHaveLength(1);
+  });
+
+  it("puts the level, difficulty, move limit, next-level and unlock facts on the result", async () => {
+    const level = resolveLevel(7, "easy");
+    const { host, session } = makeHost({ seed: 27, level, movesUsed: 4 });
+    const { storage } = stubStorage(0, { unlockedNext: false, totalStars: 11 });
+    disposers.push(startCelebrationListener(() => host, { timings: ZERO, storage }));
+    const done = waitForResult(session.sessionId);
+    reachObjective(session);
+    const result = await done;
+    expect(result).toMatchObject({
+      levelId: "easy-07",
+      levelNumber: 7,
+      difficulty: "easy",
+      moveLimit: level.moveLimit,
+      bonusMoves: level.moveLimit - 4,
+      hasNext: true,
+      unlockedNext: false,
+      totalStars: 11,
+    });
+  });
+
+  it("level 20 has no next level", async () => {
+    const level = resolveLevel(20, "normal");
+    const { host, session } = makeHost({ seed: 28, level, movesUsed: level.moveLimit });
+    const { storage } = stubStorage(0);
+    disposers.push(startCelebrationListener(() => host, { timings: ZERO, storage }));
+    const done = waitForResult(session.sessionId);
+    session.addScore(level.starThresholds[0]);
+    session.applyStep({ type: "spawnSpecial", uid: 1, cell: { row: 0, col: 0 }, special: "striped-row" });
+    session.applyStep({ type: "spawnSpecial", uid: 2, cell: { row: 0, col: 1 }, special: "striped-row" });
+    for (let i = 0; i < level.goals.length; i++) {
+      const goal = level.goals[i];
+      if (goal.type === "chain") for (let c = 0; c < goal.length; c++) session.registerCombo(c);
+    }
+    expect(session.evaluateSettled()).toBe("objective-met");
+    expect((await done).hasNext).toBe(false);
+  });
+
+  it("a level with no score goal still earns a star on victory", async () => {
+    const level = resolveLevel(3, "normal"); // "make 2 special tiles"
+    expect(level.starThresholds[0]).toBe(0);
+    const { host, session } = makeHost({ seed: 29, level, movesUsed: level.moveLimit });
+    const { storage } = stubStorage(0);
+    disposers.push(startCelebrationListener(() => host, { timings: ZERO, storage }));
+    const done = waitForResult(session.sessionId);
+    session.applyStep({ type: "spawnSpecial", uid: 1, cell: { row: 0, col: 0 }, special: "striped-row" });
+    session.applyStep({ type: "spawnSpecial", uid: 2, cell: { row: 0, col: 1 }, special: "striped-row" });
+    expect(session.evaluateSettled()).toBe("objective-met");
+    expect((await done).stars).toBeGreaterThanOrEqual(1);
   });
 
   it("looks bonus specials up by uid: swept-away ones are skipped silently, none detonate twice", async () => {
@@ -209,7 +302,7 @@ describe("celebration sequence", () => {
     // 30 leftover moves -> 30 converted tiles crowded on a 64-tile board: chains must eat some
     const { host, session, board } = makeHost({
       seed: 23,
-      level: { ...DEMO_LEVEL, moveLimit: 30 },
+      level: { ...LEVEL, moveLimit: 30 },
     });
 
     // every detonation must target a tile that is genuinely on the board at that moment
@@ -251,7 +344,7 @@ describe("celebration sequence", () => {
   });
 
   it("with no leftover moves it still celebrates and grades the score as-is", async () => {
-    const { host, session } = makeHost({ seed: 25, movesUsed: 20 });
+    const { host, session } = makeHost({ seed: 25, movesUsed: LEVEL.moveLimit });
     const { storage } = stubStorage();
     disposers.push(startCelebrationListener(() => host, { timings: ZERO, storage }));
     const done = waitForResult(session.sessionId);
@@ -260,7 +353,7 @@ describe("celebration sequence", () => {
     expect(result.bonusMoves).toBe(0);
     expect(result.bonusScore).toBe(0);
     expect(result.finalScore).toBe(TARGET);
-    expect(result.stars).toBe(computeStars(TARGET, DEMO_LEVEL.starThresholds));
+    expect(result.stars).toBe(computeStars(TARGET, LEVEL.starThresholds));
   });
 });
 
@@ -319,7 +412,7 @@ describe("celebration cancellation and session isolation", () => {
     disposers.push(startCelebrationListener(() => host, { timings: ZERO, storage }));
     emitGameEvent(GameEvents.LEVEL_OBJECTIVE_MET, {
       sessionId: session.sessionId + 1000,
-      levelId: DEMO_LEVEL.id,
+      levelId: LEVEL.id,
       score: TARGET,
       movesRemaining: 5,
     });

@@ -38,7 +38,7 @@ function toCharacterConfig(dataUrl: string): CharacterConfig {
     id: CUSTOM_CHARACTER_ID,
     label: "自定义",
     color: 0x6b7280,
-    assets: { normal: dataUrl, special: null, explode: null },
+    assets: { normal: dataUrl, sound: null, special: null, explode: null },
   };
 }
 

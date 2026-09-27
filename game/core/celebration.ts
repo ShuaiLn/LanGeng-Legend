@@ -1,6 +1,6 @@
 import { CELEBRATION_TIMINGS, type CelebrationTimings } from "../config/gameConfig";
-import { computeStars } from "../config/levels";
-import { getLevelBest, setLevelBest } from "../../lib/levelBestStorage";
+import { starsForVictory, type LevelConfig } from "../config/levels";
+import { recordLevel, type VictoryOutcome } from "../../lib/progressStorage";
 import { findTileCellByUid } from "./board";
 import { emitGameEvent, GameEvents, onGameEvent } from "./events";
 import { nextComboIndex, resolveSpecialActivation, type ResolutionStep } from "./resolver";
@@ -30,8 +30,8 @@ export interface CelebrationHost {
 export interface CelebrationOptions {
   timings?: CelebrationTimings;
   storage?: {
-    getBest(levelId: string): number;
-    setBest(levelId: string, score: number): void;
+    /** Records a victory (per difficulty; unlocks are derived) and reports what changed. */
+    record(level: LevelConfig, score: number, stars: number): VictoryOutcome;
   };
 }
 
@@ -101,19 +101,24 @@ export function runCelebration(host: CelebrationHost, options: CelebrationOption
   activeTokens.add(token);
 
   const timings = options.timings ?? CELEBRATION_TIMINGS;
-  const storage = options.storage ?? { getBest: getLevelBest, setBest: setLevelBest };
+  const storage =
+    options.storage ?? { record: (lvl, score, stars) => recordLevel(lvl.difficulty, lvl.number, score, stars) };
   const { session } = host;
   const level = session.level;
   const sessionId = session.sessionId;
 
   const finish = () => activeTokens.delete(token);
 
+  // Recorded once, the moment the final score is known: a player who leaves during the star beats
+  // still keeps the clear, and a retry after a failure can never record it twice.
+  let outcome: VictoryOutcome | null = null;
+
   async function reportResult(): Promise<void> {
     if (!level) return;
     const finalScore = session.score;
-    const stars = computeStars(finalScore, level.starThresholds);
-    const previousBest = storage.getBest(level.id);
-    const isNewBest = finalScore > previousBest;
+    const stars = starsForVictory(finalScore, level.starThresholds);
+    outcome ??= storage.record(level, finalScore, stars);
+    const recorded = outcome;
 
     // 6. reveal stars, one at a time
     for (let i = 0; i < stars; i++) {
@@ -122,8 +127,7 @@ export function runCelebration(host: CelebrationHost, options: CelebrationOption
     }
 
     // 7. new-best check
-    if (isNewBest) {
-      storage.setBest(level.id, finalScore);
+    if (recorded.isNewBest) {
       emitGameEvent(GameEvents.NEW_BEST, { sessionId, levelId: level.id, score: finalScore });
       if (!(await wait(token, timings.starGap))) return;
     }
@@ -134,15 +138,20 @@ export function runCelebration(host: CelebrationHost, options: CelebrationOption
     emitGameEvent(GameEvents.CELEBRATION_RESULT, {
       sessionId,
       levelId: level.id,
-      levelName: level.name,
+      levelNumber: level.number,
+      difficulty: level.difficulty,
       stars,
       starThresholds: level.starThresholds,
       finalScore,
-      best: Math.max(previousBest, finalScore),
-      isNewBest,
+      best: recorded.best,
+      isNewBest: recorded.isNewBest,
       maxCombo: session.maxCombo,
+      moveLimit: level.moveLimit,
       bonusMoves: session.movesAtObjective ?? 0,
       bonusScore: finalScore - (session.objectiveScore ?? finalScore),
+      hasNext: recorded.hasNext,
+      unlockedNext: recorded.unlockedNext,
+      totalStars: recorded.totalStars,
     });
   }
 
@@ -192,7 +201,8 @@ export function runCelebration(host: CelebrationHost, options: CelebrationOption
         index: i,
         total: bonusSpecialUids.length,
       });
-      const steps = resolveSpecialActivation(host.getBoard(), cell, comboIndex, session.activePool, session.rng);
+      // ensure = false: the level is already won, so a "no moves left" reshuffle mid-bonus would be noise
+      const steps = resolveSpecialActivation(host.getBoard(), cell, comboIndex, session.activePool, session.rng, false);
       comboIndex = nextComboIndex(steps, comboIndex);
       await host.playSteps(steps); // score ticks up live as each clear step plays
       if (token.cancelled) return;

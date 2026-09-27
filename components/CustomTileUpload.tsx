@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useSyncExternalStore } from "react";
-import { ACTIVE_POOL_SIZE } from "@/game/config/characters";
 import {
   clearCustomTile,
   downscaleImageFile,
@@ -9,12 +8,17 @@ import {
   saveCustomTile,
   subscribeCustomTile,
 } from "@/lib/customTileStorage";
+import { useT } from "./hooks/useT";
+import Button, { buttonClasses } from "./ui/Button";
+import Card from "./ui/Card";
 
 const getServerSnapshot = () => null;
 
+/** Settings -> "Your Tile". Behaviour is unchanged from the old home-page card; only the look moved. */
 export default function CustomTileUpload() {
   // Reading localStorage through an external store keeps server and first client render identical.
   const stored = useSyncExternalStore(subscribeCustomTile, readCustomTileDataUrl, getServerSnapshot);
+  const t = useT();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -22,41 +26,44 @@ export default function CustomTileUpload() {
     if (!file) return;
     setError(null);
     if (!file.type.startsWith("image/")) {
-      setError("Please choose an image file.");
+      setError(t("custom.errNotImage"));
       return;
     }
     setBusy(true);
     try {
       const dataUrl = await downscaleImageFile(file);
-      if (!saveCustomTile(dataUrl)) setError("Your browser refused to store the image (storage full or blocked).");
+      if (!saveCustomTile(dataUrl)) setError(t("custom.errStorage"));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not process that image.");
+      setError(e instanceof Error ? e.message : t("custom.errProcess"));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5">
-      <h2 className="text-lg font-black text-foreground">Your own tile</h2>
-      <p className="mt-1 text-sm text-muted">
-        Upload any picture and it joins the board as a character. It takes one of the {ACTIVE_POOL_SIZE} slots, so a
-        session then uses {ACTIVE_POOL_SIZE - 1} library characters plus yours. The image is downscaled to 256×256 and
-        stays in this browser only.
-      </p>
+    <Card className="p-5">
+      <p className="text-[15px] leading-relaxed text-ink-2">{t("custom.desc")}</p>
 
       <div className="mt-4 flex flex-wrap items-center gap-4">
         {stored ? (
           // eslint-disable-next-line @next/next/no-img-element -- a local data URL; next/image adds nothing here
-          <img src={stored} alt="Your uploaded tile" width={72} height={72} className="h-[72px] w-[72px] rounded-2xl border border-border object-cover" />
+          <img
+            src={stored}
+            alt={t("custom.alt")}
+            width={72}
+            height={72}
+            className="h-[72px] w-[72px] rounded-item border border-line bg-well object-cover"
+          />
         ) : (
-          <div className="flex h-[72px] w-[72px] items-center justify-center rounded-2xl border border-dashed border-border text-xs text-muted">
-            none yet
+          <div className="flex h-[72px] w-[72px] items-center justify-center rounded-item border border-dashed border-line text-xs text-ink-2">
+            {t("custom.none")}
           </div>
         )}
 
-        <label className="cursor-pointer rounded-xl bg-accent px-4 py-2 text-sm font-black text-background hover:brightness-110 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent">
-          {busy ? "Processing…" : stored ? "Replace image" : "Choose image"}
+        <label
+          className={`${buttonClasses("primary", "compact", false, "cursor-pointer")} has-[:focus-visible]:outline-[3px] has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-primary`}
+        >
+          {busy ? t("custom.processing") : stored ? t("custom.replace") : t("custom.choose")}
           <input
             type="file"
             accept="image/*"
@@ -70,24 +77,24 @@ export default function CustomTileUpload() {
         </label>
 
         {stored && (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="compact"
             onClick={() => {
               setError(null);
               clearCustomTile();
             }}
-            className="rounded-xl border border-border px-4 py-2 text-sm font-bold text-foreground hover:bg-surface-2"
           >
-            Remove
-          </button>
+            {t("custom.remove")}
+          </Button>
         )}
       </div>
 
       {error && (
-        <p role="alert" className="mt-3 text-sm font-semibold text-accent-2">
+        <p role="alert" className="mt-3 text-sm font-semibold text-danger-ink">
           {error}
         </p>
       )}
-    </section>
+    </Card>
   );
 }

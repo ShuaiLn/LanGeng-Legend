@@ -1,95 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { getActivePool } from "../../config/characters";
-import type { CelebrationTimings } from "../../config/gameConfig";
-import { DEMO_LEVEL } from "../../config/levels";
-import { cloneBoard, generateBoard } from "../board";
-import { runCelebration, type CelebrationHost } from "../celebration";
-import { GameEvents, onGameEvent, type LevelResultPayload } from "../events";
-import { attemptSwap } from "../resolver";
-import { createRng } from "../rng";
-import { GameSession } from "../session";
-import type { Board, CellRef } from "../types";
+import { resolveLevel } from "../../config/levels";
+import { goalBot, playLevel, seedsFor } from "./bots";
 
-// Guards the claim "the upper star tiers are reachable, not decorative": a seeded bot plays the
-// real demo level through the real resolver and celebration. If scoring or thresholds are
-// retuned so that 2/3 stars stop being attainable, this fails.
+// Guards the claim "the upper star tiers are reachable, not decorative": a seeded bot plays the real
+// level 1 through the real session, resolver and celebration. If scoring or the thresholds are
+// retuned so that 2 and 3 stars stop being attainable, this fails. (Every level x difficulty is
+// covered by levelBalance.test.ts; this one keeps the original bonus-phase argument for the warm-up.)
 
-const ZERO: CelebrationTimings = { pause: 0, banner: 0, convertStagger: 0, detonateGap: 0, starGap: 0, beforeResult: 0 };
-type Pool = ReturnType<typeof getActivePool>;
+const LEVEL = resolveLevel(1, "normal");
 
-function bestGreedyMove(board: Board, pool: Pool): { a: CellRef; b: CellRef } | null {
-  let best = -1;
-  let pick: { a: CellRef; b: CellRef } | null = null;
-  const consider = (a: CellRef, b: CellRef) => {
-    const trial = attemptSwap(cloneBoard(board), a, b, pool, createRng(999));
-    if (!trial.valid) return;
-    const score = trial.steps.reduce((sum, step) => sum + (step.type === "clear" ? step.scoreDelta : 0), 0);
-    if (score > best) {
-      best = score;
-      pick = { a, b };
-    }
-  };
-  for (let row = 0; row < board.length; row++) {
-    for (let col = 0; col < board[row].length; col++) {
-      if (col + 1 < board[row].length) consider({ row, col }, { row, col: col + 1 });
-      if (row + 1 < board.length) consider({ row, col }, { row: row + 1, col });
-    }
-  }
-  return pick;
-}
-
-async function playDemoLevel(seed: number): Promise<{ result: LevelResultPayload | null; objectiveScore: number | null }> {
-  const rng = createRng(seed);
-  const pool = getActivePool(null, rng);
-  const session = new GameSession({ mode: "level", level: DEMO_LEVEL }, pool, rng);
-  session.start();
-  const board = generateBoard(8, 8, pool, rng);
-  const applyScores = (steps: { type: string; scoreDelta?: number; comboIndex?: number }[]) => {
-    for (const step of steps) {
-      if (step.type !== "clear") continue;
-      session.addScore(step.scoreDelta!);
-      session.registerCombo(step.comboIndex!);
-    }
-  };
-  const host: CelebrationHost = {
-    session,
-    getBoard: () => board,
-    playSteps: async (steps) => applyScores(steps),
-  };
-
-  while ((session.movesRemaining ?? 0) > 0) {
-    const move = bestGreedyMove(board, pool);
-    if (!move) break;
-    const swap = attemptSwap(board, move.a, move.b, pool, rng);
-    if (!swap.valid) break;
-    session.consumeMove();
-    applyScores(swap.steps);
-    const outcome = session.evaluateSettled();
-    if (outcome === "objective-met") {
-      const result = await new Promise<LevelResultPayload>((resolve) => {
-        const off = onGameEvent(GameEvents.CELEBRATION_RESULT, (detail) => {
-          if (detail.sessionId !== session.sessionId) return;
-          off();
-          resolve(detail);
-        });
-        runCelebration(host, { timings: ZERO, storage: { getBest: () => 0, setBest: () => undefined } });
-      });
-      return { result, objectiveScore: session.objectiveScore };
-    }
-    if (outcome === "game-over") break;
-  }
-  return { result: null, objectiveScore: null };
-}
-
-describe("demo level balance", () => {
-  it("is winnable, and 2nd/3rd stars are earned through the bonus phase", async () => {
+describe("level 1 balance", () => {
+  it("is winnable, and the 2nd/3rd stars are earned through the bonus phase", async () => {
     const games = [];
-    for (let seed = 1; seed <= 30; seed++) games.push(await playDemoLevel(seed * 7919));
+    for (const seed of seedsFor(16)) games.push(await playLevel(LEVEL, seed, goalBot));
 
     const wins = games.filter((g) => g.result);
-    expect(wins.length).toBeGreaterThanOrEqual(15); // a decent player usually clears it
+    expect(wins.length).toBeGreaterThanOrEqual(13); // a decent player nearly always clears it
 
-    const [, secondStar, thirdStar] = DEMO_LEVEL.starThresholds;
+    const [, secondStar, thirdStar] = LEVEL.starThresholds;
     expect(wins.some((g) => g.result!.stars >= 2)).toBe(true);
     expect(wins.some((g) => g.result!.stars === 3)).toBe(true);
 

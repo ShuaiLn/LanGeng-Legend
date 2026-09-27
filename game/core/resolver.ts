@@ -1,13 +1,7 @@
-import {
-  cloneBoard,
-  createTile,
-  findTileCellByUid,
-  hasValidMove,
-  reshuffleBoard,
-  swapCells,
-} from "./board";
+import { cloneBoard, createTile, findTileCellByUid, swapCells } from "./board";
 import { boardCols, boardRows, cellKey, inBounds, isAdjacent } from "./cells";
 import { findMatches } from "./matcher";
+import { ensurePlayable, type RepairMethod } from "./playable";
 import { pickRandom } from "./rng";
 import { scorePass } from "./scoring";
 import type {
@@ -85,6 +79,8 @@ export interface RefillStep {
 export interface ReshuffleStep {
   type: "reshuffle";
   board: Board;
+  /** Which tier of the repair ladder fixed the board (see playable.ts); never "none". */
+  method: Exclude<RepairMethod, "none">;
 }
 
 export type ResolutionStep =
@@ -248,7 +244,8 @@ function runResolution(
   first: Pass,
   comboIndexStart: number,
   pool: CharacterPool,
-  rng: Rng
+  rng: Rng,
+  ensure: boolean
 ): ResolutionStep[] {
   const steps: ResolutionStep[] = [];
   let pass: Pass = first;
@@ -266,13 +263,17 @@ function runResolution(
     comboIndex++;
   }
 
-  if (!hasValidMove(board) && reshuffleBoard(board, rng)) {
-    steps.push({ type: "reshuffle", board: cloneBoard(board) });
+  if (ensure) {
+    const { method } = ensurePlayable(board, pool, rng);
+    if (method !== "none") steps.push({ type: "reshuffle", board: cloneBoard(board), method });
   }
   return steps;
 }
 
-/** Clear -> fall -> refill -> cascade until the board is quiet, then guard against deadlock. */
+/**
+ * Clear -> fall -> refill -> cascade until the board is quiet, then guard against deadlock: a dead
+ * board is repaired by `ensurePlayable` (which cannot fail) and reported as a reshuffle step.
+ */
 export function resolveLoop(
   board: Board,
   matches: MatchCluster[],
@@ -286,23 +287,28 @@ export function resolveLoop(
     { initialCells: matches.flatMap((m) => m.cells), matches },
     comboIndexStart,
     pool,
-    rng
+    rng,
+    true
   );
 }
 
 /**
  * Manually detonates the special at `cell` through the same activation queue a match would use
  * (it does not need to be part of a 3+ match). Used by the level-clear bonus phase.
+ *
+ * `ensure` (default true) repairs a dead board afterwards. The celebration passes false: the level
+ * is already won, so a "no moves left" reshuffle in the middle of the bonus blasts would be noise.
  */
 export function resolveSpecialActivation(
   board: Board,
   cell: CellRef,
   comboIndexStart: number,
   pool: CharacterPool,
-  rng: Rng
+  rng: Rng,
+  ensure = true
 ): ResolutionStep[] {
   if (!board[cell.row]?.[cell.col]) return [];
-  return runResolution(board, { initialCells: [cell], matches: [] }, comboIndexStart, pool, rng);
+  return runResolution(board, { initialCells: [cell], matches: [] }, comboIndexStart, pool, rng, ensure);
 }
 
 /** The combo index the next chain should start from, given the steps just resolved. */

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { GameEvents } from "@/game/core/events";
 import { useGameEvent } from "./hooks/useGameEvent";
+import { useT } from "./hooks/useT";
 import Stars from "./Stars";
 
 interface RevealState {
@@ -20,6 +21,7 @@ const HIDDEN: RevealState = { visible: false, finalScore: 0, revealed: 0, newBes
  * Hands over to the result panel once every beat has finished.
  */
 export default function StarReveal() {
+  const t = useT();
   const [state, setState] = useState<RevealState>(HIDDEN);
 
   useGameEvent(GameEvents.SESSION_STARTED, () => setState(HIDDEN));
@@ -33,14 +35,14 @@ export default function StarReveal() {
 
   if (!state.visible) return null;
   return (
-    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-background/55">
-      <div className="anim-panel-in flex flex-col items-center gap-3 rounded-3xl border border-border bg-surface/95 px-8 py-6 shadow-2xl">
-        <p className="text-sm font-semibold uppercase tracking-widest text-muted">Final Score</p>
-        <p className="text-5xl font-black tabular-nums text-accent">{state.finalScore.toLocaleString()}</p>
+    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-white/55">
+      <div className="anim-panel-in flex flex-col items-center gap-3 rounded-card border border-line bg-panel px-8 py-6 shadow-md">
+        <p className="text-sm font-bold uppercase tracking-widest text-ink-2">{t("reveal.finalScore")}</p>
+        <p className="text-5xl font-extrabold tabular-nums text-ink">{state.finalScore.toLocaleString()}</p>
         <Stars filled={state.revealed} size={60} popIndex={state.revealed - 1} />
         {state.newBest && (
-          <span className="anim-badge-wiggle rounded-full bg-accent-2 px-4 py-1 text-sm font-black uppercase tracking-wider text-white">
-            New Best!
+          <span className="anim-badge-pop rounded-chip bg-primary-press px-4 py-1 text-sm font-extrabold uppercase tracking-wider text-white">
+            {t("reveal.newBest")}
           </span>
         )}
       </div>

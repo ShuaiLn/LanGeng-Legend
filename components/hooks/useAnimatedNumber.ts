@@ -3,10 +3,11 @@ import { useEffect, useRef, useState } from "react";
 /**
  * Smoothly counts a displayed number toward `target`. Purely cosmetic: it follows the live
  * score as it changes, so it never plays a second "roll-up" of its own. Drops snap instantly.
+ * Pass `initial` to count up from a starting value on mount (e.g. the victory card, from 0).
  */
-export function useAnimatedNumber(target: number, duration = 380): number {
-  const [display, setDisplay] = useState(target);
-  const shown = useRef(target);
+export function useAnimatedNumber(target: number, duration = 380, initial: number = target): number {
+  const [display, setDisplay] = useState(initial);
+  const shown = useRef(initial);
 
   useEffect(() => {
     const from = shown.current;

@@ -18,6 +18,11 @@ export function keys(cells: CellRef[]): string[] {
 
 export const TEST_POOL = ["a", "b", "c", "d", "e", "f", "g"].map((id) => ({ id }));
 
+/** A pool of `size` synthetic characters: a, b, c, ... */
+export function poolOf(size: number) {
+  return Array.from({ length: size }, (_, i) => ({ id: String.fromCharCode(97 + i) }));
+}
+
 export function boardIsFull(board: Board): boolean {
   return board.every((row) => row.every((tile) => tile !== null));
 }
