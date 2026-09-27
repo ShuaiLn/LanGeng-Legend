@@ -35,6 +35,9 @@ on :3000 and serves the current code; `next build` is safe alongside it.
   and carry the `sessionId` so stale sessions are ignored.
 - **Phaser is client-only.** Load it through `next/dynamic(..., { ssr: false })` from a Client Component
   (`PlayScreen`); `app/play/page.tsx` stays a Server Component.
+- **The site is a static export** (`output: "export"`, deployed from `out/` to Cloudflare Pages). `next build` fails on
+  `headers()`, `redirects()`, `rewrites()`, `searchParams` in a page (use `useSearchParams` under `Suspense`, as
+  `PlayRoute` does), cookies and Server Actions. Response headers go in `public/_headers`. `next start` does not run.
 - **The scene owns no copy.** Interface words live in `lib/i18n/messages/`: add a key to `en.ts` (the source of truth)
   and `zh.ts` (compiled against it). Meme phrases, the "Developed by Ning" credit and character names are content and
   stay verbatim in both languages.

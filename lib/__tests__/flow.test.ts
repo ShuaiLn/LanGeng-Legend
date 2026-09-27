@@ -91,9 +91,13 @@ describe("Home -> Play -> Mode Picker -> Level Grid -> Level Popup (difficulty) 
   });
 
   it("the play page sends a level link without a valid level back to the grid, and keys the game by level and difficulty", () => {
+    // the site is a static export: the query string is read in the browser by PlayRoute, not in the page
     const page = code("app/play/page.tsx");
-    expect(page).toContain('redirect("/levels")');
-    expect(page).toMatch(/key=\{`level-\$\{chosen\}-\$\{levelNumber\}`\}/);
+    expect(page).toContain("<PlayRoute />");
+    expect(page).not.toContain("searchParams");
+    const route = code("components/PlayRoute.tsx");
+    expect(route).toContain('router.replace("/levels")');
+    expect(route).toMatch(/key=\{`level-\$\{chosen\}-\$\{levelNumber\}`\}/);
   });
 
   it("a locked level deep link bounces to the grid before any game starts", () => {

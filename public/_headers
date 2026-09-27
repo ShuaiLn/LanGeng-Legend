@@ -1,0 +1,4 @@
+# Cloudflare Pages reads this file from the root of the deployed directory (`out/`).
+# Every /game URL carries `?v=<ASSET_VERSION>` (game/config/assetUrl.ts), so these files can be immutable.
+/game/*
+  Cache-Control: public, max-age=31536000, immutable
